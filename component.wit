@@ -1,0 +1,37 @@
+package example:component;
+
+world component-demo {
+  record person {
+    name: string,
+    age: u32,
+    email: option<string>,
+  }
+
+  record address {
+    street: string,
+    city: string,
+    country: string,
+    postal-code: string,
+  }
+
+  variant result-code {
+    success,
+    not-found,
+    invalid-input(string),
+  }
+
+  record employee {
+    person: person,
+    employee-id: u32,
+    department: string,
+    address: address,
+  }
+
+  export greet: func(name: string) -> string;
+  export create-person: func(name: string, age: u32) -> person;
+  export format-person: func(p: person) -> string;
+  export is-adult: func(p: person) -> bool;
+  export get-people: func() -> list<person>;
+  export find-person: func(name: string) -> option<person>;
+  export validate-employee: func(emp: employee) -> result-code;
+}
