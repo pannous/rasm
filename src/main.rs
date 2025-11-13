@@ -58,8 +58,8 @@ fn main() {
 // Example type-safe wrappers with ergonomic field access
 gc_struct! {
     Person {
-        name: 0 => String,
-        age: 1 => mut i32,  // Mark as mutable to generate setter
+        name: 0 => mut String,  // Now mutable - generates set_name(&str)!
+        age: 1 => mut i32,      // Mutable - generates set_age(i32)
     }
 }
 
@@ -146,15 +146,14 @@ fn real_main() -> Result<()> { // get backtraces of errors
     println!("Original age: {}", bob.age()?);
 
     // Mutate using the generated setter method
-    bob.set_age(29)?;
+    bob.set_age(42)?;
+    // bob["age"]=29
     println!("After bob.set_age(29): {}", bob.age()?);
 
-    // Can also use the underlying GcObject's set_field method
-    bob.set_age(30)?;
-    println!("After bob.set_age(30): {}", bob.age()?);
-
-    bob.set_age(31)?;
-    println!("After bob.set_age(31): {}", bob.age()?);
+    // Test string mutation!
+    println!("Before mutation: name = {}", bob.name()?);
+    bob.set_name("Alice")?;
+    println!("After bob.set_name(\"Alice\"): {}", bob.name()?);
 
     println!("\n✨ Full mutation support - modify GC objects from Rust!");
 
@@ -162,13 +161,6 @@ fn real_main() -> Result<()> { // get backtraces of errors
     // Example (if name was mutable):
     //   bob.set_name("Alice")?;  // Would create GC string automatically!
     //   let name: String = bob.name()?;  // "Alice"
-    //
-    // The API is completely transparent - just pass &str and it creates the GC array!
-    println!("\nString mutation: Just use bob.set_name(\"Alice\")? if field is mutable!");
-    println!("  (Automatically creates WebAssembly GC string array)");
-
-    // Demo: Nested GC structures - Bob and Ellis become friends!
-    println!("\n");
     println!("========================================");
     println!("NESTED STRUCTURES: Bob & Ellis Friends!");
     println!("========================================\n");
@@ -191,9 +183,18 @@ fn real_main() -> Result<()> { // get backtraces of errors
         // Make Bob and Ellis friends! (setting a reference field)
         println!("\nMaking Bob and Ellis friends...");
         bob.inner.as_struct_ref().set_field(&mut *store, 3, ellis_results[0].clone())?;
+        // todo can we hide ALL complexity so that this looks like a normal setter?
+        // bob.set_field("friend", ellis) or even
+        // bob.set("friend", ellis)
+        // bob.set_friend(ellis)
         println!("✨ bob.set_field(\"friend\", ellis) - Done!");
 
         // Read Bob's friend's age through nested struct access
+        // todo there must be a better way to do this, like
+        // bob.get("friend").get("age") ??
+        // bob["friend"]["age"] index ref?
+        // bob.get_friend().get_age() via gc_struct macro?
+        // todo YIKES there must be a better way to do it than THIS:
         let friend_ref = bob.inner.as_struct_ref().field(&mut *store, 3)?;
         if let Some(friend_anyref) = friend_ref.unwrap_anyref() {
             let friend_struct = friend_anyref.unwrap_struct(&*store)?;

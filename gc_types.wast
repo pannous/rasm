@@ -4,31 +4,20 @@
 
   ;; Define struct types
   (type $person (struct
-    (field $name (mut (ref $string)))
+    (field $name (mut ref $string))
     (field $age (mut i32))
     (field $email (ref null $string))
     (field $friend (mut (ref null $person)))
   ))
-
-  (type $point (struct
-    (field $x (mut f64))
-    (field $y (mut f64))
-  ))
-
-  (type $employee (struct
-    (field $person (ref $person))
-    (field $id i32)
-    (field $salary (mut f64))
-  ))
+  (type $person_list (array (mut (ref null $person))))
 
   ;; Array type for list of people
-  (type $person_list (array (mut (ref null $person))))
 
   ;; Linear memory for string data
   (memory (export "memory") 1)
 
   ;; Create a new string from memory
-  (func $new_string (export "new_string") (param $ptr i32) (param $len i32) (result (ref $string))
+  (func $new_string (param $ptr i32) (param $len i32) (result (ref $string))
     (local $i i32)
     (local $arr (ref $string))
 
