@@ -447,6 +447,95 @@ The legacy static helper methods are still available as `OldGcString` for compat
 - ✨ Clean API: Methods on the type itself, not static helpers
 - ✨ UTF-8 validated: Safe conversion to Rust String
 
+## Direct Struct Creation from Rust (No WASM Helpers!)
+
+You can create WebAssembly GC structs **entirely from Rust** without calling WASM helper functions!
+
+### The Hybrid Approach (Recommended)
+
+**Step 1: Bootstrap** - Create one instance using WASM functions to extract type information:
+```rust
+// Create first person using WASM helper (for type discovery)
+let bob_val = create_person_wasm(...)?;
+let bob_struct = bob_val.unwrap_anyref()?.unwrap_struct(&store)?;
+```
+
+**Step 2: Extract Types** - Create a `StructBuilder` from the existing instance:
+```rust
+use gc_traits::StructBuilder;
+
+let builder = StructBuilder::from_existing(&mut store, &bob_struct)?;
+```
+
+**Step 3: Direct Creation** - Create new instances directly from Rust:
+```rust
+// Create Charlie WITHOUT calling WASM!
+let name = builder.create_string(&mut store, "Charlie")?;
+let charlie_struct = builder.create(&mut store, &[
+    name,
+    Val::I32(35),
+    Val::null_any_ref(),  // no email
+    Val::null_any_ref(),  // no friend
+])?;
+
+// Wrap in typed wrapper
+let charlie = Person::new(GcObject::from_struct_shared(
+    charlie_struct,
+    bob.inner.clone_store(),
+    bob.inner.clone_instance(),
+));
+
+// Use it!
+println!("{} is {}", charlie.name()?, charlie.age()?);
+```
+
+### What You Get
+
+**Before (calling WASM helpers):**
+```rust
+// Write to linear memory
+memory.write(&mut store, 100, "Ellis".as_bytes())?;
+
+// Call WASM function
+create_person.call(&mut store, &[Val::I32(100), Val::I32(5), Val::I32(25)], &mut results)?;
+
+// Extract result
+let ellis = results[0].clone();
+```
+
+**After (direct creation):**
+```rust
+// Create directly from Rust!
+let name = builder.create_string(&mut store, "Ellis")?;
+let ellis = builder.create(&mut store, &[name, Val::I32(25), Val::null_any_ref(), Val::null_any_ref()])?;
+```
+
+### How It Works
+
+1. **Type Extraction**: `StructBuilder::from_existing()` gets struct and array types from an existing instance using `struct_ref.ty()` and `array_ref.ty()`
+
+2. **Pre-allocators**: Creates reusable `StructRefPre` and `ArrayRefPre` for efficient repeated allocation
+
+3. **Direct Creation**: Uses Wasmtime's `StructRef::new()` and `ArrayRef::new_fixed()` to create GC objects directly on the Rust side
+
+4. **String Creation**: `create_string()` converts Rust `&str` to WebAssembly GC array of i8 bytes
+
+### Benefits
+
+- ✨ **No WASM dependency**: Don't need to export helper functions from WASM
+- ✨ **Performance**: Avoids linear memory writes and function calls
+- ✨ **Type safety**: Extracted types match the actual WASM definitions
+- ✨ **Reusable**: One builder can create many instances efficiently
+- ✨ **Hybrid flexibility**: Use WASM for first instance, direct creation after
+
+### When to Use Each Approach
+
+| Approach | Use When |
+|----------|----------|
+| **WASM helpers** | Initial prototyping, simple cases, or when types are complex |
+| **Direct creation** | Performance-critical paths, bulk creation, or when you want full Rust control |
+| **Hybrid (recommended)** | Production code - simple bootstrap, then efficient direct creation |
+
 ## Demo Output
 
 ```

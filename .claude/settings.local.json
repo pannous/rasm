@@ -3,7 +3,8 @@
     "allow": [
       "Bash(cargo run:*)",
       "Bash(cargo doc:*)",
-      "WebSearch"
+      "WebSearch",
+      "WebFetch(domain:docs.wasmtime.dev)"
     ],
     "deny": [],
     "ask": []
