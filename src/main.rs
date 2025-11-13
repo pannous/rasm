@@ -187,14 +187,9 @@ fn real_main() -> Result<()> { // get backtraces of errors
     bob.set_field("friend", ellis_val)?;  // ✨ NO .inner needed!
     println!("✨ bob.set_field(\"friend\", ellis) - Done!");
 
-    // Read Bob's friend's data - also clean!
-    let friend_struct: Rooted<StructRef> = bob.get_struct("friend")?;
-
-    let (friend_name, friend_age) = bob.with_store(|store| {
-        let name: String = friend_struct.get(store, 0)?;
-        let age: i32 = friend_struct.get(store, 1)?;
-        Ok::<(String, i32), anyhow::Error>((name, age))
-    })?;
+    // Read Bob's friend's data - completely clean now!
+    let friend_name: String = bob.get_nested("friend", "name")?;
+    let friend_age: i32 = bob.get_nested("friend", "age")?;
 
     println!("Bob's friend's name: {}", friend_name);
     println!("Bob's friend's age: {}", friend_age);

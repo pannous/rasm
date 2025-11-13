@@ -623,6 +623,30 @@ macro_rules! gc_struct {
                 self.inner.get_struct(field)
             }
 
+            /// Get a field from a nested struct in one call
+            ///
+            /// # Example
+            /// ```
+            /// let friend_name: String = bob.get_nested("friend", "name")?;
+            /// let friend_age: i32 = bob.get_nested("friend", 1)?;
+            /// ```
+            pub fn get_nested<T: $crate::gc_traits::FromVal, I1: $crate::gc_traits::FieldIndex, I2: $crate::gc_traits::FieldIndex>(
+                &self,
+                struct_field: I1,
+                nested_field: I2
+            ) -> anyhow::Result<T> {
+                self.with_store(|store| {
+                    let struct_field_idx = struct_field.to_field_index(self.inner.as_struct_ref(), &*store)?;
+                    let nested_struct = self.inner.as_struct_ref().field(&mut *store, struct_field_idx)?;
+                    let nested_anyref = nested_struct.unwrap_anyref()
+                        .ok_or_else(|| anyhow::anyhow!("nested field is null or not a struct"))?;
+                    let nested_struct_ref = nested_anyref.unwrap_struct(&*store)?;
+                    let field_idx = nested_field.to_field_index(&nested_struct_ref, &*store)?;
+                    let val = nested_struct_ref.field(&mut *store, field_idx)?;
+                    T::from_val(val, &mut *store)
+                })
+            }
+
             /// Access the store with a closure
             pub fn with_store<F, R>(&self, f: F) -> R
             where
