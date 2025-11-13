@@ -169,6 +169,114 @@ let age: i32 = person.get(1)?;
 
 _Note: Currently uses a hardcoded field name mapping. Future versions will parse the WASM name section for automatic support._
 
+### Even More Ergonomic: gc_struct! Macro!
+
+For the ultimate developer experience with **zero boilerplate**, use the enhanced `gc_struct!` macro:
+
+```rust
+// Just define your struct - everything else is generated!
+gc_struct! {
+    Person {
+        name: 0 => String,
+        age: 1 => i32,
+    }
+}
+
+// Usage - IDE autocomplete works!
+let person = Person::new(GcObject::new(val, store)?);
+let name: String = person.name()?;  // Generated method!
+let age: i32 = person.age()?;       // Type-safe!
+
+// Or create directly from Val and Store
+let person = Person::from_val(val, store)?;
+let name: String = person.name()?;
+```
+
+**What gets generated:**
+```rust
+pub struct Person {
+    inner: GcObject<RefCell<Store<()>>>,
+}
+
+impl Person {
+    pub fn new(obj: GcObject<RefCell<Store<()>>>) -> Self { ... }
+    pub fn from_val(val: Val, store: Store<()>) -> Result<Self> { ... }
+    pub fn name(&self) -> Result<String> { ... }
+    pub fn age(&self) -> Result<i32> { ... }
+}
+```
+
+**Benefits:**
+- ✨ **IDE Autocomplete**: All methods show up in your IDE
+- ✨ **Type Safety**: Field types checked at compile time
+- ✨ **Clean Syntax**: Natural Rust method calls `person.name()?`
+- ✨ **No String Literals**: Can't typo field names
+- ✨ **Zero Boilerplate**: One macro invocation generates everything
+- ✨ **Store Hidden**: No `&mut store` parameters
+
+**Multiple structs:**
+```rust
+gc_struct! {
+    Person {
+        name: 0 => String,
+        age: 1 => i32,
+    }
+}
+
+gc_struct! {
+    Point {
+        x: 0 => f64,
+        y: 1 => f64,
+    }
+}
+
+// Each gets full type-safe API
+let p = Point::from_val(val, store)?;
+let x: f64 = p.x()?;
+let y: f64 = p.y()?;
+```
+
+### Mutation: Modify GC Objects from Rust!
+
+You can modify mutable WebAssembly GC fields from Rust! Mark fields as `mut` in the `gc_struct!` macro to generate setter methods:
+
+```rust
+gc_struct! {
+    Person {
+        name: 0 => String,      // Immutable - only getter generated
+        age: 1 => mut i32,      // Mutable - getter + setter generated
+    }
+}
+
+// Read the field
+let age: i32 = person.age()?;  // 28
+
+// Mutate the field!
+person.set_age(29)?;            // Generated setter method
+let age: i32 = person.age()?;  // 29
+
+// Can also use the generic set_field method
+person.inner.set_field("age", 30)?;  // By name
+person.inner.set_field(1, 31)?;      // By index
+```
+
+**How it works:**
+- Only fields marked with `mut` get setter methods generated
+- Setters use the `ToVal` trait to convert Rust types to WebAssembly values
+- Currently supports: `i32`, `i64`, `f32`, `f64`, `bool`
+- String mutation requires `GcString::create()` (coming soon)
+
+**Requirements:**
+- Field must be declared as `(mut ...)` in the WebAssembly struct type
+- Type must implement the `ToVal` trait
+- For example, the WAT file must have: `(field $age (mut i32))`
+
+**Benefits:**
+- ✨ **Type-safe**: Compile-time type checking
+- ✨ **Ergonomic**: Clean `person.set_age(30)?` syntax
+- ✨ **IDE Support**: Setter methods show up in autocomplete
+- ✨ **Generic fallback**: `set_field()` works with both names and indices
+
 ### Nested Struct Navigation
 
 Access nested GC structs with `.get_struct()`:

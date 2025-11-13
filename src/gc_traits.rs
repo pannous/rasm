@@ -5,10 +5,16 @@ use wasmtime::*;
 use std::str;
 use std::ops::Index;
 use std::cell::RefCell;
+use paste::paste;
 
 /// Trait for converting Val to Rust types
 pub trait FromVal: Sized {
     fn from_val(val: Val, store: &mut Store<()>) -> Result<Self>;
+}
+
+/// Trait for converting Rust types to Val
+pub trait ToVal {
+    fn to_val(&self) -> Val;
 }
 
 impl FromVal for i32 {
@@ -57,6 +63,37 @@ impl FromVal for Rooted<StructRef> {
 }
 
 // Note: For nested structs, use StructExt::get_struct() instead of FromVal
+
+// ToVal implementations for converting Rust types to Val
+impl ToVal for i32 {
+    fn to_val(&self) -> Val {
+        Val::I32(*self)
+    }
+}
+
+impl ToVal for i64 {
+    fn to_val(&self) -> Val {
+        Val::I64(*self)
+    }
+}
+
+impl ToVal for f32 {
+    fn to_val(&self) -> Val {
+        Val::F32(self.to_bits())
+    }
+}
+
+impl ToVal for f64 {
+    fn to_val(&self) -> Val {
+        Val::F64(self.to_bits())
+    }
+}
+
+impl ToVal for bool {
+    fn to_val(&self) -> Val {
+        Val::I32(if *self { 1 } else { 0 })
+    }
+}
 
 /// Context that holds the Store, allowing methods to be called without explicit store passing
 pub struct GcContext<'a> {
@@ -231,9 +268,9 @@ impl GcObject<RefCell<Store<()>>> {
     /// let name: String = person.get(0)?;      // By index
     /// let name: String = person.get("name")?; // By field name
     /// ```
-    pub fn get<T: FromVal, I: FieldIndex>(&self, index: I) -> Result<T> {
+    pub fn get<T: FromVal, I: FieldIndex>(&self, field: I) -> Result<T> {
         self.with_store(|store| {
-            let idx = index.to_field_index(&self.inner, &*store)?;
+            let idx = field.to_field_index(&self.inner, &*store)?;
             let val = self.inner.field(&mut *store, idx)?;
             T::from_val(val, &mut *store)
         })
@@ -256,6 +293,30 @@ impl GcObject<RefCell<Store<()>>> {
             let idx = index.to_field_index(&self.inner, &*store)?;
             let val = self.inner.field(&mut *store, idx)?;
             Ok(val.unwrap_anyref().is_none())
+        })
+    }
+
+
+    /// Check if a field is not null
+    pub fn has<I: FieldIndex>(&self, index: I) -> Result<bool> {
+        self.with_store(|store| {
+            let idx = index.to_field_index(&self.inner, &*store)?;
+            let val = self.inner.field(&mut *store, idx)?;
+            Ok(!val.unwrap_anyref().is_none())
+        })
+    }
+
+    /// Set a field value (for mutable fields)
+    ///
+    /// # Examples
+    /// ```
+    /// person.set_field("age", 29)?;
+    /// person.set_field(1, 29)?;  // By index
+    /// ```
+    pub fn set_field<T: ToVal, I: FieldIndex>(&self, field: I, value: T) -> Result<()> {
+        self.with_store(|store| {
+            let idx = field.to_field_index(&self.inner, &*store)?;
+            self.inner.set_field(&mut *store, idx, value.to_val())
         })
     }
 }
@@ -444,58 +505,113 @@ pub trait GcStruct: Sized {
     fn struct_ref(&self) -> &Rooted<StructRef>;
 }
 
-/// Macro for defining type-safe struct wrappers
+/// Macro for defining type-safe struct wrappers with ergonomic field access
+///
+/// Generates a wrapper struct with typed accessor methods that hide the store.
+///
+/// Fields can be marked as `mut` to generate setter methods (only for types implementing ToVal).
+///
+/// # Example
+/// ```
+/// gc_struct! {
+///     Person {
+///         name: 0 => String,           // Immutable - only getter
+///         age: 1 => mut i32,           // Mutable - getter + setter
+///     }
+/// }
+///
+/// // Usage:
+/// let person = Person::new(GcObject::new(val, store)?);
+/// let name: String = person.name()?;    // Getter
+/// let age: i32 = person.age()?;         // Getter
+/// person.set_age(30)?;                  // Setter (only for mut fields)
+/// ```
 #[macro_export]
 macro_rules! gc_struct {
+    // Entry point
     (
         $name:ident {
-            $($field_name:ident : $field_idx:literal => $field_type:ty),* $(,)?
+            $($field_spec:tt)*
         }
     ) => {
         pub struct $name {
-            inner: wasmtime::Rooted<wasmtime::StructRef>,
+            inner: $crate::gc_traits::GcObject<std::cell::RefCell<wasmtime::Store<()>>>,
         }
 
         impl $name {
-            pub fn from_val(store: &wasmtime::Store<()>, val: wasmtime::Val) -> anyhow::Result<Self> {
-                let anyref = val.unwrap_anyref().ok_or_else(|| anyhow::anyhow!("not an anyref"))?;
-                let inner = anyref.unwrap_struct(store)?;
-                Ok(Self { inner })
+            /// Create from a GcObject that owns the store
+            pub fn new(obj: $crate::gc_traits::GcObject<std::cell::RefCell<wasmtime::Store<()>>>) -> Self {
+                Self { inner: obj }
             }
 
-            $(
-                pub fn $field_name(&self, store: &mut wasmtime::Store<()>) -> anyhow::Result<$field_type> {
-                    use $crate::gc_traits::StructExt;
-                    self.inner.get(store, $field_idx)
-                }
-            )*
+            /// Create directly from Val and Store
+            pub fn from_val(val: wasmtime::Val, store: wasmtime::Store<()>) -> anyhow::Result<Self> {
+                let obj = $crate::gc_traits::GcObject::new(val, store)?;
+                Ok(Self::new(obj))
+            }
         }
 
-        impl $crate::gc_traits::GcStruct for $name {
-            fn from_val(store: &wasmtime::Store<()>, val: wasmtime::Val) -> anyhow::Result<Self> {
-                Self::from_val(store, val)
-            }
+        // Generate getters and conditional setters
+        $crate::gc_struct!(@parse_fields $name; $($field_spec)*);
+    };
 
-            fn struct_ref(&self) -> &wasmtime::Rooted<wasmtime::StructRef> {
-                &self.inner
+    // Parse mutable field
+    (@parse_fields $name:ident; $field_name:ident : $field_idx:literal => mut $field_type:ty, $($rest:tt)*) => {
+        $crate::gc_struct!(@impl_mut_field $name, $field_name, $field_type);
+        $crate::gc_struct!(@parse_fields $name; $($rest)*);
+    };
+
+    // Parse mutable field (last one, no comma)
+    (@parse_fields $name:ident; $field_name:ident : $field_idx:literal => mut $field_type:ty) => {
+        $crate::gc_struct!(@impl_mut_field $name, $field_name, $field_type);
+    };
+
+    // Parse immutable field
+    (@parse_fields $name:ident; $field_name:ident : $field_idx:literal => $field_type:ty, $($rest:tt)*) => {
+        $crate::gc_struct!(@impl_field $name, $field_name, $field_type);
+        $crate::gc_struct!(@parse_fields $name; $($rest)*);
+    };
+
+    // Parse immutable field (last one, no comma)
+    (@parse_fields $name:ident; $field_name:ident : $field_idx:literal => $field_type:ty) => {
+        $crate::gc_struct!(@impl_field $name, $field_name, $field_type);
+    };
+
+    // Base case: no more fields
+    (@parse_fields $name:ident;) => {};
+
+    // Implement getter + setter for mutable field
+    (@impl_mut_field $name:ident, $field_name:ident, $field_type:ty) => {
+        paste::paste! {
+            impl $name {
+                /// Get field value
+                pub fn $field_name(&self) -> anyhow::Result<$field_type> {
+                    self.inner.get(stringify!($field_name))
+                }
+
+                /// Set field value (for mutable fields)
+                pub fn [<set_ $field_name>](&self, value: $field_type) -> anyhow::Result<()> {
+                    self.inner.set_field(stringify!($field_name), value)
+                }
+            }
+        }
+    };
+
+    // Implement getter only for immutable field
+    (@impl_field $name:ident, $field_name:ident, $field_type:ty) => {
+        impl $name {
+            /// Get field value
+            pub fn $field_name(&self) -> anyhow::Result<$field_type> {
+                self.inner.get(stringify!($field_name))
             }
         }
     };
 }
 
-// Example: Define a type-safe Point wrapper
-gc_struct! {
-    Point {
-        x: 0 => f64,
-        y: 1 => f64,
-    }
-}
+// Keep WasmAccess export for potential future use
+use rasm_macros::WasmAccess;
 
-gc_struct! {
-    Person {
-        age: 1 => i32,
-    }
-}
+
 
 /// GC string wrapper (wraps WebAssembly GC array of i8 bytes)
 ///
