@@ -212,23 +212,22 @@ fn real_main() -> Result<()> { // get backtraces of errors
     println!("========================================\n");
 
     // Bootstrap: Extract type information from Bob (created using WASM)
-    let builder = bob.with_store(|store| {
-        use gc_traits::StructBuilder;
-        StructBuilder::from_existing(&mut *store, bob.inner.as_struct_ref())
-    })?;
+    use gc_traits::StructBuilder;
+    let builder = StructBuilder::from_existing_shared(
+        bob.inner.clone_store(),
+        bob.inner.as_struct_ref()
+    )?;
 
     println!("✨ Created StructBuilder from Bob's type");
 
-    // Now create new people DIRECTLY from Rust - no WASM calls!
-    let charlie_struct = bob.with_store(|store| {
-        let name = builder.create_string(&mut *store, "Charlie")?;
-        builder.create(&mut *store, &[
-            name,
-            Val::I32(35),
-            Val::null_any_ref(),  // no email
-            Val::null_any_ref(),  // no friend
-        ])
-    })?;
+    // Now create new people DIRECTLY from Rust - no WASM calls, no with_store!
+    let name = builder.create_string("Charlie")?;
+    let charlie_struct = builder.create(&[
+        name,
+        Val::I32(35),
+        Val::null_any_ref(),  // no email
+        Val::null_any_ref(),  // no friend
+    ])?;
 
     println!("✨ Created Charlie directly from Rust (no WASM function call!)");
 
@@ -243,16 +242,14 @@ fn real_main() -> Result<()> { // get backtraces of errors
     println!("  Charlie's age: {}", charlie.age()?);
 
     // Create another one!
-    let diana_struct = bob.with_store(|store| {
-        let name = builder.create_string(&mut *store, "Diana 🚀")?;
-        let email = builder.create_string(&mut *store, "diana@example.com")?;
-        builder.create(&mut *store, &[
-            name,
-            Val::I32(29),
-            email,  // with email!
-            Val::null_any_ref(),
-        ])
-    })?;
+    let name = builder.create_string("Diana 🚀")?;
+    let email = builder.create_string("diana@example.com")?;
+    let diana_struct = builder.create(&[
+        name,
+        Val::I32(29),
+        email,  // with email!
+        Val::null_any_ref(),
+    ])?;
 
     let diana = Person::new(GcObject::from_struct_shared(
         diana_struct,
@@ -265,7 +262,7 @@ fn real_main() -> Result<()> { // get backtraces of errors
 
     println!("\n✨ SUCCESS! Created GC structs entirely from Rust!");
     println!("   No WASM helper functions needed after bootstrap!");
-    println!("   Hybrid approach: Use WASM once, then direct creation!");
+    println!("   No with_store() closures - clean and simple!");
 
     Ok(())
 }

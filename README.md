@@ -464,14 +464,18 @@ let bob_struct = bob_val.unwrap_anyref()?.unwrap_struct(&store)?;
 ```rust
 use gc_traits::StructBuilder;
 
-let builder = StructBuilder::from_existing(&mut store, &bob_struct)?;
+// Builder shares the store and handles all borrowing internally!
+let builder = StructBuilder::from_existing_shared(
+    bob.inner.clone_store(),
+    bob.inner.as_struct_ref()
+)?;
 ```
 
-**Step 3: Direct Creation** - Create new instances directly from Rust:
+**Step 3: Direct Creation** - Create new instances directly from Rust (NO with_store needed!):
 ```rust
-// Create Charlie WITHOUT calling WASM!
-let name = builder.create_string(&mut store, "Charlie")?;
-let charlie_struct = builder.create(&mut store, &[
+// Create Charlie WITHOUT calling WASM - look how clean this is!
+let name = builder.create_string("Charlie")?;  // No &mut store!
+let charlie_struct = builder.create(&[
     name,
     Val::I32(35),
     Val::null_any_ref(),  // no email
@@ -505,20 +509,22 @@ let ellis = results[0].clone();
 
 **After (direct creation):**
 ```rust
-// Create directly from Rust!
-let name = builder.create_string(&mut store, "Ellis")?;
-let ellis = builder.create(&mut store, &[name, Val::I32(25), Val::null_any_ref(), Val::null_any_ref()])?;
+// Create directly from Rust - no store passing!
+let name = builder.create_string("Ellis")?;
+let ellis = builder.create(&[name, Val::I32(25), Val::null_any_ref(), Val::null_any_ref()])?;
 ```
 
 ### How It Works
 
-1. **Type Extraction**: `StructBuilder::from_existing()` gets struct and array types from an existing instance using `struct_ref.ty()` and `array_ref.ty()`
+1. **Type Extraction**: `StructBuilder::from_existing_shared()` gets struct and array types from an existing instance using `struct_ref.ty()` and `array_ref.ty()`
 
-2. **Pre-allocators**: Creates reusable `StructRefPre` and `ArrayRefPre` for efficient repeated allocation
+2. **Shared Store**: Builder owns `Rc<RefCell<Store<()>>>` and handles all borrowing internally - no more `with_store()` closures!
 
-3. **Direct Creation**: Uses Wasmtime's `StructRef::new()` and `ArrayRef::new_fixed()` to create GC objects directly on the Rust side
+3. **Pre-allocators**: Creates reusable `StructRefPre` and `ArrayRefPre` for efficient repeated allocation
 
-4. **String Creation**: `create_string()` converts Rust `&str` to WebAssembly GC array of i8 bytes
+4. **Direct Creation**: Uses Wasmtime's `StructRef::new()` and `ArrayRef::new_fixed()` to create GC objects directly on the Rust side
+
+5. **String Creation**: `create_string()` converts Rust `&str` to WebAssembly GC array of i8 bytes - borrows store internally
 
 ### Benefits
 
@@ -526,6 +532,7 @@ let ellis = builder.create(&mut store, &[name, Val::I32(25), Val::null_any_ref()
 - ✨ **Performance**: Avoids linear memory writes and function calls
 - ✨ **Type safety**: Extracted types match the actual WASM definitions
 - ✨ **Reusable**: One builder can create many instances efficiently
+- ✨ **Clean API**: No `with_store()` closures - builder handles borrowing internally
 - ✨ **Hybrid flexibility**: Use WASM for first instance, direct creation after
 
 ### When to Use Each Approach

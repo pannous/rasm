@@ -823,25 +823,27 @@ use rasm_macros::WasmAccess;
 /// Builder for creating WebAssembly GC structs directly from Rust
 ///
 /// This allows creating GC structs without calling WASM helper functions!
+/// The builder owns a reference to the store and handles borrowing internally.
 ///
 /// # Example
 /// ```
 /// // Bootstrap: create first instance using WASM
-/// let bob_val = create_person_wasm(...)?;
-/// let bob_struct = bob_val.unwrap_anyref()?.unwrap_struct(&store)?;
+/// let bob = Person::from_val(...)?;
 ///
-/// // Extract types and create builder
-/// let builder = StructBuilder::from_existing(&mut store, &bob_struct)?;
+/// // Extract types and create builder (no store passing!)
+/// let builder = StructBuilder::from_existing_shared(bob.clone_store(), bob.as_struct_ref())?;
 ///
-/// // Now create instances directly from Rust!
-/// let ellis_struct = builder.create(&mut store, &[
-///     builder.create_string(&mut store, "Ellis")?,
+/// // Now create instances directly from Rust - NO with_store needed!
+/// let name = builder.create_string("Ellis")?;
+/// let ellis_struct = builder.create(&[
+///     name,
 ///     Val::I32(25),
-///     Val::null(),
-///     Val::null(),
+///     Val::null_any_ref(),
+///     Val::null_any_ref(),
 /// ])?;
 /// ```
 pub struct StructBuilder {
+    store: Rc<RefCell<Store<()>>>,
     string_allocator: ArrayRefPre,
     struct_allocator: StructRefPre,
 }
@@ -849,25 +851,37 @@ pub struct StructBuilder {
 impl StructBuilder {
     /// Create a builder by extracting types from an existing struct instance
     ///
-    /// This is the recommended approach - create one instance using WASM functions,
-    /// then use this builder to create subsequent instances directly from Rust.
-    pub fn from_existing(store: &mut Store<()>, example: &Rooted<StructRef>) -> Result<Self> {
-        // Get the struct's type
-        let struct_type = example.ty(&*store)?;
+    /// This is the recommended approach - the builder shares the store and handles
+    /// all borrowing internally. No need for with_store() closures!
+    pub fn from_existing_shared(
+        store: Rc<RefCell<Store<()>>>,
+        example: &Rooted<StructRef>
+    ) -> Result<Self> {
+        // Borrow store for type extraction
+        let (struct_type, string_type) = {
+            let mut store_ref = store.borrow_mut();
 
-        // Get the string array type from the first field (assuming it's a string)
-        // This assumes the struct has at least one string field
-        let name_field = example.field(&mut *store, 0)?;
-        let name_anyref = name_field.unwrap_anyref()
-            .ok_or_else(|| anyhow::anyhow!("Expected first field to be a string (arrayref)"))?;
-        let name_array = name_anyref.unwrap_array(&*store)?;
-        let string_type = name_array.ty(&*store)?;
+            // Get the struct's type
+            let struct_type = example.ty(&*store_ref)?;
 
-        // Create pre-allocators for efficient repeated creation
-        let string_allocator = ArrayRefPre::new(&mut *store, string_type);
-        let struct_allocator = StructRefPre::new(&mut *store, struct_type);
+            // Get the string array type from the first field (assuming it's a string)
+            let name_field = example.field(&mut *store_ref, 0)?;
+            let name_anyref = name_field.unwrap_anyref()
+                .ok_or_else(|| anyhow::anyhow!("Expected first field to be a string (arrayref)"))?;
+            let name_array = name_anyref.unwrap_array(&*store_ref)?;
+            let string_type = name_array.ty(&*store_ref)?;
+
+            (struct_type, string_type)
+        };
+
+        // Create pre-allocators
+        let mut store_ref = store.borrow_mut();
+        let string_allocator = ArrayRefPre::new(&mut *store_ref, string_type);
+        let struct_allocator = StructRefPre::new(&mut *store_ref, struct_type);
+        drop(store_ref);
 
         Ok(Self {
+            store,
             string_allocator,
             struct_allocator,
         })
@@ -875,18 +889,22 @@ impl StructBuilder {
 
     /// Create a GC string array from a Rust &str
     ///
-    /// Returns a Val that can be used as a field value in struct creation
-    pub fn create_string(&self, store: &mut Store<()>, s: &str) -> Result<Val> {
+    /// Returns a Val that can be used as a field value in struct creation.
+    /// No need to pass store - it's handled internally!
+    pub fn create_string(&self, s: &str) -> Result<Val> {
         let bytes: Vec<Val> = s.bytes().map(|b| Val::I32(b as i32)).collect();
-        let array = ArrayRef::new_fixed(store, &self.string_allocator, &bytes)?;
+        let mut store = self.store.borrow_mut();
+        let array = ArrayRef::new_fixed(&mut *store, &self.string_allocator, &bytes)?;
         Ok(Val::AnyRef(Some(array.into())))
     }
 
     /// Create a new struct instance with the given field values
     ///
-    /// Field values should be in the same order as the struct definition
-    pub fn create(&self, store: &mut Store<()>, fields: &[Val]) -> Result<Rooted<StructRef>> {
-        StructRef::new(store, &self.struct_allocator, fields)
+    /// Field values should be in the same order as the struct definition.
+    /// No need to pass store - it's handled internally!
+    pub fn create(&self, fields: &[Val]) -> Result<Rooted<StructRef>> {
+        let mut store = self.store.borrow_mut();
+        StructRef::new(&mut *store, &self.struct_allocator, fields)
     }
 }
 
