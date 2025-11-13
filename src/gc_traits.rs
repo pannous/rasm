@@ -610,6 +610,26 @@ macro_rules! gc_struct {
                 let obj = $crate::gc_traits::GcObject::new(val, store, instance)?;
                 Ok(Self::new(obj))
             }
+
+            /// Generic field setter - delegates to inner GcObject
+            ///
+            /// Useful for fields not defined in the struct (like nested object references)
+            pub fn set_field<T: $crate::gc_traits::ToVal, I: $crate::gc_traits::FieldIndex>(&self, field: I, value: T) -> anyhow::Result<()> {
+                self.inner.set_field(field, value)
+            }
+
+            /// Get nested struct field - delegates to inner GcObject
+            pub fn get_struct<I: $crate::gc_traits::FieldIndex>(&self, field: I) -> anyhow::Result<wasmtime::Rooted<wasmtime::StructRef>> {
+                self.inner.get_struct(field)
+            }
+
+            /// Access the store with a closure
+            pub fn with_store<F, R>(&self, f: F) -> R
+            where
+                F: FnOnce(&mut wasmtime::Store<()>) -> R,
+            {
+                self.inner.with_store(f)
+            }
         }
 
         // Generate getters and conditional setters

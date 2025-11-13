@@ -165,8 +165,8 @@ fn real_main() -> Result<()> { // get backtraces of errors
     println!("NESTED STRUCTURES: Bob & Ellis Friends!");
     println!("========================================\n");
 
-    // Create Ellis in the same store (GC objects must share a store!)
-    bob.inner.with_store(|store| {
+    // Create Ellis in Bob's store (GC objects must share a store!)
+    let ellis_val = bob.with_store(|store| {
         // Write Ellis's name to memory
         memory.write(&mut *store, 100, "Ellis".as_bytes())?;
 
@@ -179,35 +179,25 @@ fn real_main() -> Result<()> { // get backtraces of errors
         )?;
 
         println!("Created Ellis (age 25)");
-
-        // Make Bob and Ellis friends! (setting a reference field)
-        println!("\nMaking Bob and Ellis friends...");
-        bob.inner.as_struct_ref().set_field(&mut *store, 3, ellis_results[0].clone())?;
-        // todo can we hide ALL complexity so that this looks like a normal setter?
-        // bob.set_field("friend", ellis) or even
-        // bob.set("friend", ellis)
-        // bob.set_friend(ellis)
-        println!("✨ bob.set_field(\"friend\", ellis) - Done!");
-
-        // Read Bob's friend's age through nested struct access
-        // todo there must be a better way to do this, like
-        // bob.get("friend").get("age") ??
-        // bob["friend"]["age"] index ref?
-        // bob.get_friend().get_age() via gc_struct macro?
-        // todo YIKES there must be a better way to do it than THIS:
-        let friend_ref = bob.inner.as_struct_ref().field(&mut *store, 3)?;
-        if let Some(friend_anyref) = friend_ref.unwrap_anyref() {
-            let friend_struct = friend_anyref.unwrap_struct(&*store)?;
-            let friend_age: i32 = friend_struct.get(&mut *store, 1)?;
-            println!("Bob's friend's age: {}", friend_age);
-
-            // Get friend's name too!
-            let friend_name: String = friend_struct.get(&mut *store, 0)?;
-            println!("Bob's friend's name: {}", friend_name);
-        }
-
-        Ok::<(), anyhow::Error>(())
+        Ok::<Val, anyhow::Error>(ellis_results[0].clone())
     })?;
+
+    // Make Bob and Ellis friends - CLEAN API!
+    println!("\nMaking Bob and Ellis friends...");
+    bob.set_field("friend", ellis_val)?;  // ✨ NO .inner needed!
+    println!("✨ bob.set_field(\"friend\", ellis) - Done!");
+
+    // Read Bob's friend's data - also clean!
+    let friend_struct: Rooted<StructRef> = bob.get_struct("friend")?;
+
+    let (friend_name, friend_age) = bob.with_store(|store| {
+        let name: String = friend_struct.get(store, 0)?;
+        let age: i32 = friend_struct.get(store, 1)?;
+        Ok::<(String, i32), anyhow::Error>((name, age))
+    })?;
+
+    println!("Bob's friend's name: {}", friend_name);
+    println!("Bob's friend's age: {}", friend_age);
 
     println!("\n✨ Nested GC structures work! Object graphs in Rust!");
     println!("   (The challenge: all GC objects must share one Store)");
