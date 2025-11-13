@@ -155,6 +155,8 @@ fn real_main() -> Result<()> { // get backtraces of errors
     println!("BLACK MAGIC: Direct GC Object Access");
     println!("========================================\n");
 
+    // ⚠️ Don't copy past this, see below for ergonomic API!
+
     // Create a fresh person for this demo
     // Write "Bob 🎉" to memory
     let bob_name = "Bob 🎉";
@@ -193,11 +195,11 @@ fn real_main() -> Result<()> { // get backtraces of errors
     println!("EVEN MORE ERGONOMIC: gc_struct! Macro");
     println!("========================================\n");
 
-    let bob = Person::new(person);
+    let person = Person::new(person);
 
     // Generated accessor methods - IDE autocomplete works!
-    let name2: String = bob.name()?;
-    let age2: i32 = bob.age()?;
+    let name2: String = person.name()?;
+    let age2: i32 = person.age()?;
 
     println!("With gc_struct! macro:");
     println!("  let name: String = person.name()?;  // {}", name2);
@@ -210,17 +212,17 @@ fn real_main() -> Result<()> { // get backtraces of errors
     println!("MUTATION: Modify GC Objects from Rust");
     println!("========================================\n");
 
-    println!("Original age: {}", bob.age()?);
+    println!("Original age: {}", person.age()?);
 
     // Mutate using the generated setter method
-    bob.set_age(42)?;
+    person.set_age(42)?;
     // bob["age"]=29
-    println!("After bob.set_age(29): {}", bob.age()?);
+    println!("After bob.set_age(29): {}", person.age()?);
 
     // Test string mutation!
-    println!("Before mutation: name = {}", bob.name()?);
-    bob.set_name("Alice")?;
-    println!("After bob.set_name(\"Alice\"): {}", bob.name()?);
+    println!("Before mutation: name = {}", person.name()?);
+    person.set_name("Alice")?;
+    println!("After bob.set_name(\"Alice\"): {}", person.name()?);
 
     println!("\n✨ Full mutation support - modify GC objects from Rust!");
 
@@ -229,36 +231,34 @@ fn real_main() -> Result<()> { // get backtraces of errors
     //   bob.set_name("Alice")?;  // Would create GC string automatically!
     //   let name: String = bob.name()?;  // "Alice"
     println!("========================================");
-    println!("NESTED STRUCTURES: Bob & Ellis Friends!");
+    println!("NESTED STRUCTURES: Bob & Diana Friends!");
     println!("========================================\n");
 
 
     // Create another one with BEAUTIFUL object-literal syntax!
-    let ellis = Person::create(&bob, obj! {
+    // Todo: do we really need the 'template' parameter bob?
+    let diana = Person::create(&person, obj! {
         name: "Diana 🚀",
         age: 29,
         email: "diana@example.com",
     })?;
 
-    // Make Bob and Ellis friends - CLEAN API!
-    println!("\nMaking Bob and Ellis friends...");
-    bob.set_field("friend", ellis)?;  // ✨ NO .inner needed!
-    println!("✨ bob.set_field(\"friend\", ellis) - Done!");
+    // Make Bob and Diana friends - CLEAN API!
+    println!("\nMaking Bob and Diana friends...");
+    person.set_field("friend", diana)?;  // ✨ NO .inner needed!
+    println!("✨ bob.set_field(\"friend\", diana) - Done!");
 
-    // Read Bob's friend's data - THREE ways to do it!
+    // Read Bob's friend's data - 2 ways to do it!
 
     // Way 1: Direct nested access (one-liner)
-    let friend_name: String = bob.get_nested("friend", "name")?;
-    let friend_age: i32 = bob.get_nested("friend", "age")?;
+    let friend_name: String = person.get_nested("friend", "name")?;
+    let friend_age: i32 = person.get_nested("friend", "age")?;
     println!("Way 1 (get_nested): {}, age {}", friend_name, friend_age);
 
     // Way 2: Get as proper Person object - CLEANEST syntax!
-    let ellis: Person = bob.get_as("friend")?;
-    println!("Way 2 (get_as): {}, age {}", ellis.name()?, ellis.age()?);
+    let diana: Person = person.get_as("friend")?;
+    println!("Way 2 (get_as): {}, age {}", diana.name()?, diana.age()?);
 
-    // Ellis can even be mutated!
-    ellis.set_age(26)?;
-    println!("After ellis.set_age(26): {}", ellis.age()?);
 
     Ok(())
 }
