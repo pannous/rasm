@@ -194,11 +194,9 @@ fn real_main() -> Result<()> { // get backtraces of errors
     let friend_age: i32 = bob.get_nested("friend", "age")?;
     println!("Way 1 (get_nested): {}, age {}", friend_name, friend_age);
 
-    // Way 2: Get as proper Person object! (shares the same store)
-    let ellis: Person = Person::new(bob.get_struct_object("friend")?);
-    let ellis: Person = Person::new(bob.get("friend")?);
-    let ellis: Person = Person::new(bob.get("friend")?)
-    println!("Way 2 (normal object): {}, age {}", ellis.name()?, ellis.age()?);
+    // Way 2: Get as proper Person object - CLEANEST syntax!
+    let ellis: Person = bob.get_as("friend")?;
+    println!("Way 2 (get_as): {}, age {}", ellis.name()?, ellis.age()?);
 
     // Ellis can even be mutated!
     ellis.set_age(26)?;

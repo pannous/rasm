@@ -347,6 +347,20 @@ impl GcObject<Rc<RefCell<Store<()>>>> {
         Ok(GcObject::from_struct_shared(struct_ref, self.store.clone(), self.instance.clone()))
     }
 
+    /// Get nested struct as a wrapped type (Person, Point, etc.)
+    ///
+    /// This is the most ergonomic way to get nested objects!
+    ///
+    /// # Example
+    /// ```
+    /// let ellis: Person = bob.get_as("friend")?;
+    /// // Much cleaner than: Person::new(bob.get_struct_object("friend")?)
+    /// ```
+    pub fn get_as<T: GcStructWrapper, I: FieldIndex>(&self, index: I) -> Result<T> {
+        let gc_obj = self.get_struct_object(index)?;
+        Ok(T::from_gc_object(gc_obj))
+    }
+
     /// Check if a field is null
     pub fn is_null<I: FieldIndex>(&self, index: I) -> Result<bool> {
         self.with_store(|store| {
@@ -585,6 +599,13 @@ pub trait GcStruct: Sized {
     fn struct_ref(&self) -> &Rooted<StructRef>;
 }
 
+/// Trait for types that can be created from a GcObject
+///
+/// This is implemented automatically by gc_struct! macro for generated wrapper types
+pub trait GcStructWrapper: Sized {
+    fn from_gc_object(obj: GcObject<Rc<RefCell<Store<()>>>>) -> Self;
+}
+
 /// Macro for defining type-safe struct wrappers with ergonomic field access
 ///
 /// Generates a wrapper struct with typed accessor methods that hide the store.
@@ -618,6 +639,12 @@ macro_rules! gc_struct {
             pub inner: $crate::gc_traits::GcObject<std::rc::Rc<std::cell::RefCell<wasmtime::Store<()>>>>,
         }
 
+        impl $crate::gc_traits::GcStructWrapper for $name {
+            fn from_gc_object(obj: $crate::gc_traits::GcObject<std::rc::Rc<std::cell::RefCell<wasmtime::Store<()>>>>) -> Self {
+                Self { inner: obj }
+            }
+        }
+
         impl $name {
             /// Create from a GcObject that owns the store
             pub fn new(obj: $crate::gc_traits::GcObject<std::rc::Rc<std::cell::RefCell<wasmtime::Store<()>>>>) -> Self {
@@ -647,6 +674,19 @@ macro_rules! gc_struct {
             /// Returns a GcObject that can be wrapped in any gc_struct! type
             pub fn get_struct_object<I: $crate::gc_traits::FieldIndex>(&self, field: I) -> anyhow::Result<$crate::gc_traits::GcObject<std::rc::Rc<std::cell::RefCell<wasmtime::Store<()>>>>> {
                 self.inner.get_struct_object(field)
+            }
+
+            /// Get nested struct as a typed wrapper (Person, Point, etc.)
+            ///
+            /// This is the MOST ergonomic way to get nested objects!
+            ///
+            /// # Example
+            /// ```
+            /// let ellis: Person = bob.get_as("friend")?;
+            /// // Much cleaner than: Person::new(bob.get_struct_object("friend")?)
+            /// ```
+            pub fn get_as<T: $crate::gc_traits::GcStructWrapper, I: $crate::gc_traits::FieldIndex>(&self, field: I) -> anyhow::Result<T> {
+                self.inner.get_as(field)
             }
 
             /// Get a field from a nested struct in one call

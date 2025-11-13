@@ -286,13 +286,31 @@ person.inner.set_field("name", "Bob")?;  // Strings too!
 
 ### Nested Struct Navigation
 
-Access nested GC structs with `.get_struct()`:
+There are multiple ways to access nested GC structs, each with different tradeoffs:
 
+**1. Most Ergonomic - `get_as<T>()` method:**
 ```rust
-// Get nested person from employee
+// Get nested struct as typed wrapper - CLEANEST syntax!
+let ellis: Person = bob.get_as("friend")?;
+let age = ellis.age()?;
+ellis.set_age(26)?;  // Can be mutated!
+```
+
+**2. One-liner - `get_nested()` method:**
+```rust
+// Access nested field directly without creating wrapper
+let friend_name: String = bob.get_nested("friend", "name")?;
+let friend_age: i32 = bob.get_nested("friend", 1)?;
+```
+
+**3. Low-level - `get_struct()` method:**
+```rust
+// Get raw StructRef for manual access
 let nested_person = employee.get_struct(&mut store, 0)?;
 let nested_age: i32 = nested_person.get(&mut store, 1)?;
 ```
+
+**Recommendation**: Use `get_as()` when you need the nested object as a proper typed wrapper, `get_nested()` for quick one-off field access, and `get_struct()` only for low-level manipulation.
 
 ### Option Type Helpers
 
