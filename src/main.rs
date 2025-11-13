@@ -8,6 +8,20 @@ mod gc_traits;
 
 use gc_traits::{GcObject, StructExt};
 
+// Beautiful object-literal macro for creating GC structs!
+// Works with ANY struct type!
+use gc_traits::ObjFieldValue;
+
+macro_rules! obj {
+    ( $($k:ident : $v:expr),* $(,)? ) => {{
+        vec![
+            $(
+                (stringify!($k), $crate::gc_traits::ObjFieldValue::from($v)),
+            )*
+        ]
+    }};
+}
+
 use std::panic;
 use backtrace::Backtrace;
 
@@ -60,6 +74,59 @@ gc_struct! {
     Person {
         name: 0 => mut String,  // Now mutable - generates set_name(&str)!
         age: 1 => mut i32,      // Mutable - generates set_age(i32)
+    }
+}
+
+impl Person {
+    /// Create a new Person using beautiful object-literal syntax!
+    ///
+    /// # Example
+    /// ```
+    /// let diana = Person::create(&bob, obj! {
+    ///     name: "Diana 🚀",
+    ///     age: 29,
+    ///     email: "diana@example.com",
+    /// })?;
+    /// ```
+    pub fn create<T: gc_traits::GcStructWrapper>(
+        from: &T,
+        fields: Vec<(&str, ObjFieldValue)>,
+    ) -> Result<Self> {
+        use gc_traits::StructBuilder;
+
+        // Create builder from existing instance
+        let builder = StructBuilder::from_existing_shared(
+            from.get_inner().clone_store(),
+            from.get_inner().as_struct_ref(),
+        )?;
+
+        // Map field names to indices (Person-specific)
+        let field_name_to_index = |name: &str| -> Result<usize> {
+            match name {
+                "name" => Ok(0),
+                "age" => Ok(1),
+                "email" => Ok(2),
+                "friend" => Ok(3),
+                _ => Err(anyhow::anyhow!("Unknown field: {}", name)),
+            }
+        };
+
+        // Build Val array in correct order
+        let mut vals = vec![Val::null_any_ref(); 4];  // 4 fields in Person
+        for (field_name, field_value) in fields {
+            let index = field_name_to_index(field_name)?;
+            vals[index] = builder.field_value_to_val(&field_value)?;
+        }
+
+        // Create the struct
+        let struct_ref = builder.create(&vals)?;
+
+        // Wrap in typed wrapper
+        Ok(Person::new(GcObject::from_struct_shared(
+            struct_ref,
+            from.get_inner().clone_store(),
+            from.get_inner().clone_instance(),
+        )))
     }
 }
 
@@ -241,28 +308,23 @@ fn real_main() -> Result<()> { // get backtraces of errors
     println!("  Charlie's name: {}", charlie.name()?);
     println!("  Charlie's age: {}", charlie.age()?);
 
-    // Create another one!
-    let name = builder.create_string("Diana 🚀")?;
-    let email = builder.create_string("diana@example.com")?;
-    let diana_struct = builder.create(&[
-        name,
-        Val::I32(29),
-        email,  // with email!
-        Val::null_any_ref(),
-    ])?;
-
-    let diana = Person::new(GcObject::from_struct_shared(
-        diana_struct,
-        bob.inner.clone_store(),
-        bob.inner.clone_instance(),
-    ));
+    // Create another one with BEAUTIFUL object-literal syntax!
+    let diana = Person::create(&bob, obj! {
+        name: "Diana 🚀",
+        age: 29,
+        email: "diana@example.com",
+    })?;
 
     println!("  Diana's name: {}", diana.name()?);
     println!("  Diana's age: {}", diana.age()?);
 
-    println!("\n✨ SUCCESS! Created GC structs entirely from Rust!");
-    println!("   No WASM helper functions needed after bootstrap!");
-    println!("   No with_store() closures - clean and simple!");
+    println!("\n✨ ULTIMATE SUCCESS! Object-literal syntax!");
+    println!("   let diana = Person::create(&bob, obj! {{");
+    println!("       name: \\\"Diana 🚀\\\",");
+    println!("       age: 29,");
+    println!("       email: \\\"diana@example.com\\\",");
+    println!("   }})?;");
+    println!("\n   All complexity hidden - JSON-like syntax for GC structs!");
 
     Ok(())
 }

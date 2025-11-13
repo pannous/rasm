@@ -614,6 +614,7 @@ pub trait GcStruct: Sized {
 /// This is implemented automatically by gc_struct! macro for generated wrapper types
 pub trait GcStructWrapper: Sized {
     fn from_gc_object(obj: GcObject<Rc<RefCell<Store<()>>>>) -> Self;
+    fn get_inner(&self) -> &GcObject<Rc<RefCell<Store<()>>>>;
 }
 
 /// Macro for defining type-safe struct wrappers with ergonomic field access
@@ -652,6 +653,10 @@ macro_rules! gc_struct {
         impl $crate::gc_traits::GcStructWrapper for $name {
             fn from_gc_object(obj: $crate::gc_traits::GcObject<std::rc::Rc<std::cell::RefCell<wasmtime::Store<()>>>>) -> Self {
                 Self { inner: obj }
+            }
+
+            fn get_inner(&self) -> &$crate::gc_traits::GcObject<std::rc::Rc<std::cell::RefCell<wasmtime::Store<()>>>> {
+                &self.inner
             }
         }
 
@@ -820,6 +825,60 @@ macro_rules! gc_struct {
 // Keep WasmAccess export for potential future use
 use rasm_macros::WasmAccess;
 
+/// Value type for object-literal syntax
+#[derive(Clone)]
+pub enum ObjFieldValue {
+    String(String),
+    I32(i32),
+    I64(i64),
+    F32(f32),
+    F64(f64),
+    Bool(bool),
+    Null,
+}
+
+impl From<&str> for ObjFieldValue {
+    fn from(s: &str) -> Self {
+        ObjFieldValue::String(s.to_string())
+    }
+}
+
+impl From<String> for ObjFieldValue {
+    fn from(s: String) -> Self {
+        ObjFieldValue::String(s)
+    }
+}
+
+impl From<i32> for ObjFieldValue {
+    fn from(n: i32) -> Self {
+        ObjFieldValue::I32(n)
+    }
+}
+
+impl From<i64> for ObjFieldValue {
+    fn from(n: i64) -> Self {
+        ObjFieldValue::I64(n)
+    }
+}
+
+impl From<f32> for ObjFieldValue {
+    fn from(n: f32) -> Self {
+        ObjFieldValue::F32(n)
+    }
+}
+
+impl From<f64> for ObjFieldValue {
+    fn from(n: f64) -> Self {
+        ObjFieldValue::F64(n)
+    }
+}
+
+impl From<bool> for ObjFieldValue {
+    fn from(b: bool) -> Self {
+        ObjFieldValue::Bool(b)
+    }
+}
+
 /// Builder for creating WebAssembly GC structs directly from Rust
 ///
 /// This allows creating GC structs without calling WASM helper functions!
@@ -905,6 +964,19 @@ impl StructBuilder {
     pub fn create(&self, fields: &[Val]) -> Result<Rooted<StructRef>> {
         let mut store = self.store.borrow_mut();
         StructRef::new(&mut *store, &self.struct_allocator, fields)
+    }
+
+    /// Convert an ObjFieldValue to Val (for object-literal syntax)
+    pub fn field_value_to_val(&self, value: &ObjFieldValue) -> Result<Val> {
+        match value {
+            ObjFieldValue::String(s) => self.create_string(s),
+            ObjFieldValue::I32(n) => Ok(Val::I32(*n)),
+            ObjFieldValue::I64(n) => Ok(Val::I64(*n)),
+            ObjFieldValue::F32(n) => Ok(Val::F32(n.to_bits())),
+            ObjFieldValue::F64(n) => Ok(Val::F64(n.to_bits())),
+            ObjFieldValue::Bool(b) => Ok(Val::I32(if *b { 1 } else { 0 })),
+            ObjFieldValue::Null => Ok(Val::null_any_ref()),
+        }
     }
 }
 
