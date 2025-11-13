@@ -187,12 +187,22 @@ fn real_main() -> Result<()> { // get backtraces of errors
     bob.set_field("friend", ellis_val)?;  // ✨ NO .inner needed!
     println!("✨ bob.set_field(\"friend\", ellis) - Done!");
 
-    // Read Bob's friend's data - completely clean now!
+    // Read Bob's friend's data - THREE ways to do it!
+
+    // Way 1: Direct nested access (one-liner)
     let friend_name: String = bob.get_nested("friend", "name")?;
     let friend_age: i32 = bob.get_nested("friend", "age")?;
+    println!("Way 1 (get_nested): {}, age {}", friend_name, friend_age);
 
-    println!("Bob's friend's name: {}", friend_name);
-    println!("Bob's friend's age: {}", friend_age);
+    // Way 2: Get as proper Person object! (shares the same store)
+    let ellis: Person = Person::new(bob.get_struct_object("friend")?);
+    let ellis: Person = Person::new(bob.get("friend")?);
+    let ellis: Person = Person::new(bob.get("friend")?)
+    println!("Way 2 (normal object): {}, age {}", ellis.name()?, ellis.age()?);
+
+    // Ellis can even be mutated!
+    ellis.set_age(26)?;
+    println!("After ellis.set_age(26): {}", ellis.age()?);
 
     println!("\n✨ Nested GC structures work! Object graphs in Rust!");
     println!("   (The challenge: all GC objects must share one Store)");

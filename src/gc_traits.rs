@@ -5,6 +5,7 @@ use wasmtime::*;
 use std::str;
 use std::ops::Index;
 use std::cell::RefCell;
+use std::rc::Rc;
 use paste::paste;
 
 /// Trait for converting Val to Rust types
@@ -201,7 +202,7 @@ impl IntoContextual for Rooted<StructRef> {
 /// Field value wrapper for Index operations
 pub struct FieldValue {
     val: Val,
-    store_ref: *const RefCell<Store<()>>,
+    store_ref: *const Rc<RefCell<Store<()>>>,
 }
 
 impl FieldValue {
@@ -210,8 +211,8 @@ impl FieldValue {
         F: FnOnce(&mut Store<()>) -> R,
     {
         unsafe {
-            let store_cell = &*self.store_ref;
-            f(&mut *store_cell.borrow_mut())
+            let store_rc = &*self.store_ref;
+            f(&mut *store_rc.borrow_mut())
         }
     }
 }
@@ -266,7 +267,7 @@ pub struct GcObject<T> {
     cached: RefCell<Option<FieldValue>>,
 }
 
-impl GcObject<RefCell<Store<()>>> {
+impl GcObject<Rc<RefCell<Store<()>>>> {
     /// Create a new GcObject that owns the store
     ///
     /// Pass `instance` if you need string mutation support
@@ -276,17 +277,27 @@ impl GcObject<RefCell<Store<()>>> {
         let inner = anyref.unwrap_struct(&store)?;
         Ok(Self {
             inner,
-            store: RefCell::new(store),
+            store: Rc::new(RefCell::new(store)),
             instance,
             cached: RefCell::new(None)
         })
     }
 
-    /// Create from an existing StructRef
+    /// Create from an existing StructRef, sharing the store with another GcObject
+    pub fn from_struct_shared(struct_ref: Rooted<StructRef>, store: Rc<RefCell<Store<()>>>, instance: Option<Instance>) -> Self {
+        Self {
+            inner: struct_ref,
+            store,
+            instance,
+            cached: RefCell::new(None)
+        }
+    }
+
+    /// Create from an existing StructRef (for backward compatibility)
     pub fn from_struct(struct_ref: Rooted<StructRef>, store: Store<()>, instance: Option<Instance>) -> Self {
         Self {
             inner: struct_ref,
-            store: RefCell::new(store),
+            store: Rc::new(RefCell::new(store)),
             instance,
             cached: RefCell::new(None)
         }
@@ -326,6 +337,14 @@ impl GcObject<RefCell<Store<()>>> {
                 .ok_or_else(|| anyhow::anyhow!("field {} is not an anyref", idx))?;
             anyref.unwrap_struct(&*store)
         })
+    }
+
+    /// Get nested struct as a GcObject that shares the same store
+    ///
+    /// This allows getting nested structs as proper wrapper objects
+    pub fn get_struct_object<I: FieldIndex>(&self, index: I) -> Result<GcObject<Rc<RefCell<Store<()>>>>> {
+        let struct_ref = self.get_struct(index)?;
+        Ok(GcObject::from_struct_shared(struct_ref, self.store.clone(), self.instance.clone()))
     }
 
     /// Check if a field is null
@@ -382,7 +401,7 @@ impl GcObject<RefCell<Store<()>>> {
 }
 
 // Index implementation for bracket syntax: person["name"]
-impl Index<&str> for GcObject<RefCell<Store<()>>> {
+impl Index<&str> for GcObject<Rc<RefCell<Store<()>>>> {
     type Output = FieldValue;
 
     fn index(&self, name: &str) -> &Self::Output {
@@ -406,7 +425,7 @@ impl Index<&str> for GcObject<RefCell<Store<()>>> {
     }
 }
 
-impl Index<usize> for GcObject<RefCell<Store<()>>> {
+impl Index<usize> for GcObject<Rc<RefCell<Store<()>>>> {
     type Output = FieldValue;
 
     fn index(&self, index: usize) -> &Self::Output {
@@ -596,12 +615,12 @@ macro_rules! gc_struct {
         }
     ) => {
         pub struct $name {
-            pub inner: $crate::gc_traits::GcObject<std::cell::RefCell<wasmtime::Store<()>>>,
+            pub inner: $crate::gc_traits::GcObject<std::rc::Rc<std::cell::RefCell<wasmtime::Store<()>>>>,
         }
 
         impl $name {
             /// Create from a GcObject that owns the store
-            pub fn new(obj: $crate::gc_traits::GcObject<std::cell::RefCell<wasmtime::Store<()>>>) -> Self {
+            pub fn new(obj: $crate::gc_traits::GcObject<std::rc::Rc<std::cell::RefCell<wasmtime::Store<()>>>>) -> Self {
                 Self { inner: obj }
             }
 
@@ -621,6 +640,13 @@ macro_rules! gc_struct {
             /// Get nested struct field - delegates to inner GcObject
             pub fn get_struct<I: $crate::gc_traits::FieldIndex>(&self, field: I) -> anyhow::Result<wasmtime::Rooted<wasmtime::StructRef>> {
                 self.inner.get_struct(field)
+            }
+
+            /// Get nested struct as a GcObject wrapper (shares the same store)
+            ///
+            /// Returns a GcObject that can be wrapped in any gc_struct! type
+            pub fn get_struct_object<I: $crate::gc_traits::FieldIndex>(&self, field: I) -> anyhow::Result<$crate::gc_traits::GcObject<std::rc::Rc<std::cell::RefCell<wasmtime::Store<()>>>>> {
+                self.inner.get_struct_object(field)
             }
 
             /// Get a field from a nested struct in one call
