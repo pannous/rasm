@@ -7,6 +7,7 @@
     (field $name (ref $string))
     (field $age (mut i32))
     (field $email (ref null $string))
+    (field $friend (mut (ref null $person)))
   ))
 
   (type $point (struct
@@ -106,6 +107,7 @@
       (call $new_string (local.get $name_ptr) (local.get $name_len))
       (local.get $age)
       (ref.null $string)
+      (ref.null $person)  ;; friend starts as null
     )
   )
 
@@ -120,6 +122,7 @@
       (call $new_string (local.get $name_ptr) (local.get $name_len))
       (local.get $age)
       (call $new_string (local.get $email_ptr) (local.get $email_len))
+      (ref.null $person)  ;; friend starts as null
     )
   )
 

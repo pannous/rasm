@@ -6,7 +6,7 @@ mod gc_traits;
 // mod old_wrapper;
 // mod nest_test;
 
-use gc_traits::GcObject;
+use gc_traits::{GcObject, StructExt};
 
 use std::panic;
 use backtrace::Backtrace;
@@ -166,6 +166,50 @@ fn real_main() -> Result<()> { // get backtraces of errors
     // The API is completely transparent - just pass &str and it creates the GC array!
     println!("\nString mutation: Just use bob.set_name(\"Alice\")? if field is mutable!");
     println!("  (Automatically creates WebAssembly GC string array)");
+
+    // Demo: Nested GC structures - Bob and Ellis become friends!
+    println!("\n");
+    println!("========================================");
+    println!("NESTED STRUCTURES: Bob & Ellis Friends!");
+    println!("========================================\n");
+
+    // Create Ellis in the same store (GC objects must share a store!)
+    bob.inner.with_store(|store| {
+        // Write Ellis's name to memory
+        memory.write(&mut *store, 100, "Ellis".as_bytes())?;
+
+        // Create Ellis as a person
+        let mut ellis_results = vec![Val::I32(0)];
+        create_person.call(
+            &mut *store,
+            &[Val::I32(100), Val::I32(5), Val::I32(25)],
+            &mut ellis_results,
+        )?;
+
+        println!("Created Ellis (age 25)");
+
+        // Make Bob and Ellis friends! (setting a reference field)
+        println!("\nMaking Bob and Ellis friends...");
+        bob.inner.as_struct_ref().set_field(&mut *store, 3, ellis_results[0].clone())?;
+        println!("✨ bob.set_field(\"friend\", ellis) - Done!");
+
+        // Read Bob's friend's age through nested struct access
+        let friend_ref = bob.inner.as_struct_ref().field(&mut *store, 3)?;
+        if let Some(friend_anyref) = friend_ref.unwrap_anyref() {
+            let friend_struct = friend_anyref.unwrap_struct(&*store)?;
+            let friend_age: i32 = friend_struct.get(&mut *store, 1)?;
+            println!("Bob's friend's age: {}", friend_age);
+
+            // Get friend's name too!
+            let friend_name: String = friend_struct.get(&mut *store, 0)?;
+            println!("Bob's friend's name: {}", friend_name);
+        }
+
+        Ok::<(), anyhow::Error>(())
+    })?;
+
+    println!("\n✨ Nested GC structures work! Object graphs in Rust!");
+    println!("   (The challenge: all GC objects must share one Store)");
 
     Ok(())
 }

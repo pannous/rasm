@@ -108,6 +108,19 @@ impl ToVal for String {
     }
 }
 
+impl ToVal for Rooted<StructRef> {
+    fn to_val(&self, _store: &mut Store<()>, _instance: Option<&Instance>) -> Result<Val> {
+        // Convert StructRef to AnyRef, then wrap in Val
+        Ok(Val::AnyRef(Some(self.clone().into())))
+    }
+}
+
+impl ToVal for Val {
+    fn to_val(&self, _store: &mut Store<()>, _instance: Option<&Instance>) -> Result<Val> {
+        Ok(self.clone())
+    }
+}
+
 /// Context that holds the Store, allowing methods to be called without explicit store passing
 pub struct GcContext<'a> {
     store: &'a mut Store<()>,
@@ -280,7 +293,9 @@ impl GcObject<RefCell<Store<()>>> {
     }
 
     /// Access the store mutably
-    fn with_store<F, R>(&self, f: F) -> R
+    ///
+    /// Useful for performing operations that need direct store access
+    pub fn with_store<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&mut Store<()>) -> R,
     {
@@ -339,6 +354,7 @@ impl GcObject<RefCell<Store<()>>> {
     /// person.set_field("age", 29)?;        // Primitives
     /// person.set_field(1, 29)?;            // By index
     /// person.set_field("name", "Alice")?;  // Strings (requires instance)
+    /// person.set_field("friend", &ellis)?; // Nested structs!
     /// ```
     pub fn set_field<T: ToVal, I: FieldIndex>(&self, field: I, value: T) -> Result<()> {
         self.with_store(|store| {
@@ -346,6 +362,22 @@ impl GcObject<RefCell<Store<()>>> {
             let val = value.to_val(&mut *store, self.instance.as_ref())?;
             self.inner.set_field(&mut *store, idx, val)
         })
+    }
+
+    /// Get the inner StructRef for passing as a field value to other structs
+    ///
+    /// # Example
+    /// ```
+    /// let bob_ref = bob.as_struct_ref();
+    /// employee.set_field("person", bob_ref)?;
+    /// ```
+    pub fn as_struct_ref(&self) -> &Rooted<StructRef> {
+        &self.inner
+    }
+
+    /// Convert to Val for passing to WASM functions or setting in fields
+    pub fn to_val(&self) -> Val {
+        Val::AnyRef(Some(self.inner.clone().into()))
     }
 }
 
@@ -459,6 +491,7 @@ impl FieldIndex for &str {
             "name" => 0,
             "age" => 1,
             "email" => 2,
+            "friend" => 3,
             "x" => 0,
             "y" => 1,
             "person" => 0,
@@ -563,7 +596,7 @@ macro_rules! gc_struct {
         }
     ) => {
         pub struct $name {
-            inner: $crate::gc_traits::GcObject<std::cell::RefCell<wasmtime::Store<()>>>,
+            pub inner: $crate::gc_traits::GcObject<std::cell::RefCell<wasmtime::Store<()>>>,
         }
 
         impl $name {
