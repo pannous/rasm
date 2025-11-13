@@ -103,7 +103,7 @@ fn real_main() -> Result<()> { // get backtraces of errors
     let fresh_person = results[0].clone();
 
     // Wrap the person in GcObject - it owns the store
-    let person = GcObject::new(fresh_person, store)?;
+    let person = GcObject::new(fresh_person, store, Some(instance))?;
 
     println!("The most ergonomic API - GcObject wraps the struct:");
     println!("----------------------------------------------------");
@@ -157,6 +157,15 @@ fn real_main() -> Result<()> { // get backtraces of errors
     println!("After bob.set_age(31): {}", bob.age()?);
 
     println!("\n✨ Full mutation support - modify GC objects from Rust!");
+
+    // Note: String mutation also works if the field is marked as (mut ...) in WAT!
+    // Example (if name was mutable):
+    //   bob.set_name("Alice")?;  // Would create GC string automatically!
+    //   let name: String = bob.name()?;  // "Alice"
+    //
+    // The API is completely transparent - just pass &str and it creates the GC array!
+    println!("\nString mutation: Just use bob.set_name(\"Alice\")? if field is mutable!");
+    println!("  (Automatically creates WebAssembly GC string array)");
 
     Ok(())
 }

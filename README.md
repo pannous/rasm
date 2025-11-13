@@ -243,28 +243,35 @@ You can modify mutable WebAssembly GC fields from Rust! Mark fields as `mut` in 
 ```rust
 gc_struct! {
     Person {
-        name: 0 => String,      // Immutable - only getter generated
+        name: 0 => mut String,  // Mutable string - setter takes &str!
         age: 1 => mut i32,      // Mutable - getter + setter generated
     }
 }
 
-// Read the field
-let age: i32 = person.age()?;  // 28
+// Read fields
+let name: String = person.name()?;  // "Bob 🎉"
+let age: i32 = person.age()?;       // 28
 
-// Mutate the field!
-person.set_age(29)?;            // Generated setter method
+// Mutate primitive fields
+person.set_age(29)?;
 let age: i32 = person.age()?;  // 29
 
+// Mutate string fields - completely transparent!
+person.set_name("Alice")?;     // Just pass &str - GC string created automatically!
+let name: String = person.name()?;  // "Alice"
+
 // Can also use the generic set_field method
-person.inner.set_field("age", 30)?;  // By name
-person.inner.set_field(1, 31)?;      // By index
+person.inner.set_field("age", 30)?;      // By name
+person.inner.set_field(1, 31)?;          // By index
+person.inner.set_field("name", "Bob")?;  // Strings too!
 ```
 
 **How it works:**
 - Only fields marked with `mut` get setter methods generated
 - Setters use the `ToVal` trait to convert Rust types to WebAssembly values
-- Currently supports: `i32`, `i64`, `f32`, `f64`, `bool`
-- String mutation requires `GcString::create()` (coming soon)
+- **String fields are special**: setters take `&str` and automatically create WebAssembly GC string arrays!
+- Supported types: `i32`, `i64`, `f32`, `f64`, `bool`, `String`
+- String mutation requires the `Instance` to be passed when creating `GcObject`
 
 **Requirements:**
 - Field must be declared as `(mut ...)` in the WebAssembly struct type
@@ -347,6 +354,41 @@ let is_null = person_ctx.is_null(2)?;
 - ✨ Clean syntax: No `&mut store` clutter
 - ✨ Context reuse: Create once, use for multiple operations
 - ✨ Type-safe: Still uses generic `.get<T>()` under the hood
+
+## Creating WebAssembly GC Strings from Rust
+
+### Invisible String Creation (Automatic)
+
+When you use mutation APIs with string fields, GC string arrays are created automatically:
+
+```rust
+// Create GcObject with instance for string support
+let person = GcObject::new(person_val, store, Some(instance))?;
+
+// String automatically created as WebAssembly GC array!
+person.set_field("name", "Alice")?;
+
+// Or with generated setters
+bob.set_name("Alice")?;  // &str → GC string array (invisible!)
+```
+
+**How it works under the hood:**
+1. The `ToVal` trait is implemented for `&str`
+2. When setting a string field, `GcString::create()` is called automatically
+3. It writes the string to linear memory
+4. Calls the WASM `new_string` function to create a GC array
+5. Returns the GC array reference as a `Val`
+
+**You never need to call `GcString::create()` manually!** It's handled transparently by the API.
+
+### Manual String Creation (Advanced)
+
+If you need direct control, you can create GC strings manually:
+
+```rust
+let val = GcString::create(&mut store, &instance, "Hello")?;
+// val is now a Val containing a WebAssembly GC string array
+```
 
 ## GcString: Type-Safe GC Array Wrapper
 

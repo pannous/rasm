@@ -14,7 +14,7 @@ pub trait FromVal: Sized {
 
 /// Trait for converting Rust types to Val
 pub trait ToVal {
-    fn to_val(&self) -> Val;
+    fn to_val(&self, store: &mut Store<()>, instance: Option<&Instance>) -> Result<Val>;
 }
 
 impl FromVal for i32 {
@@ -66,32 +66,45 @@ impl FromVal for Rooted<StructRef> {
 
 // ToVal implementations for converting Rust types to Val
 impl ToVal for i32 {
-    fn to_val(&self) -> Val {
-        Val::I32(*self)
+    fn to_val(&self, _store: &mut Store<()>, _instance: Option<&Instance>) -> Result<Val> {
+        Ok(Val::I32(*self))
     }
 }
 
 impl ToVal for i64 {
-    fn to_val(&self) -> Val {
-        Val::I64(*self)
+    fn to_val(&self, _store: &mut Store<()>, _instance: Option<&Instance>) -> Result<Val> {
+        Ok(Val::I64(*self))
     }
 }
 
 impl ToVal for f32 {
-    fn to_val(&self) -> Val {
-        Val::F32(self.to_bits())
+    fn to_val(&self, _store: &mut Store<()>, _instance: Option<&Instance>) -> Result<Val> {
+        Ok(Val::F32(self.to_bits()))
     }
 }
 
 impl ToVal for f64 {
-    fn to_val(&self) -> Val {
-        Val::F64(self.to_bits())
+    fn to_val(&self, _store: &mut Store<()>, _instance: Option<&Instance>) -> Result<Val> {
+        Ok(Val::F64(self.to_bits()))
     }
 }
 
 impl ToVal for bool {
-    fn to_val(&self) -> Val {
-        Val::I32(if *self { 1 } else { 0 })
+    fn to_val(&self, _store: &mut Store<()>, _instance: Option<&Instance>) -> Result<Val> {
+        Ok(Val::I32(if *self { 1 } else { 0 }))
+    }
+}
+
+impl ToVal for &str {
+    fn to_val(&self, store: &mut Store<()>, instance: Option<&Instance>) -> Result<Val> {
+        let instance = instance.ok_or_else(|| anyhow::anyhow!("Instance required for string creation"))?;
+        GcString::create(store, instance, self)
+    }
+}
+
+impl ToVal for String {
+    fn to_val(&self, store: &mut Store<()>, instance: Option<&Instance>) -> Result<Val> {
+        self.as_str().to_val(store, instance)
     }
 }
 
@@ -227,30 +240,43 @@ impl From<&FieldValue> for bool {
 ///
 /// # Example
 /// ```
-/// let mut person = GcObject::new(person_val, store);
+/// let mut person = GcObject::new(person_val, store, Some(&instance));
 /// let name: String = person.get(0)?;  // No &mut store needed!
 /// let age: i32 = person.get(1)?;
-/// // Or use bracket syntax:
-/// let name: String = person["name"];  // Direct access!
+/// person.set_field("age", 30)?;       // Mutation!
+/// person.set_field("name", "Alice")?; // String mutation (requires instance)!
 /// ```
 pub struct GcObject<T> {
     inner: Rooted<StructRef>,
     store: T,
+    instance: Option<Instance>,
     cached: RefCell<Option<FieldValue>>,
 }
 
 impl GcObject<RefCell<Store<()>>> {
     /// Create a new GcObject that owns the store
-    pub fn new(val: Val, store: Store<()>) -> Result<Self> {
+    ///
+    /// Pass `instance` if you need string mutation support
+    pub fn new(val: Val, store: Store<()>, instance: Option<Instance>) -> Result<Self> {
         let anyref = val.unwrap_anyref()
             .ok_or_else(|| anyhow::anyhow!("not an anyref"))?;
         let inner = anyref.unwrap_struct(&store)?;
-        Ok(Self { inner, store: RefCell::new(store), cached: RefCell::new(None) })
+        Ok(Self {
+            inner,
+            store: RefCell::new(store),
+            instance,
+            cached: RefCell::new(None)
+        })
     }
 
     /// Create from an existing StructRef
-    pub fn from_struct(struct_ref: Rooted<StructRef>, store: Store<()>) -> Self {
-        Self { inner: struct_ref, store: RefCell::new(store), cached: RefCell::new(None) }
+    pub fn from_struct(struct_ref: Rooted<StructRef>, store: Store<()>, instance: Option<Instance>) -> Self {
+        Self {
+            inner: struct_ref,
+            store: RefCell::new(store),
+            instance,
+            cached: RefCell::new(None)
+        }
     }
 
     /// Access the store mutably
@@ -310,13 +336,15 @@ impl GcObject<RefCell<Store<()>>> {
     ///
     /// # Examples
     /// ```
-    /// person.set_field("age", 29)?;
-    /// person.set_field(1, 29)?;  // By index
+    /// person.set_field("age", 29)?;        // Primitives
+    /// person.set_field(1, 29)?;            // By index
+    /// person.set_field("name", "Alice")?;  // Strings (requires instance)
     /// ```
     pub fn set_field<T: ToVal, I: FieldIndex>(&self, field: I, value: T) -> Result<()> {
         self.with_store(|store| {
             let idx = field.to_field_index(&self.inner, &*store)?;
-            self.inner.set_field(&mut *store, idx, value.to_val())
+            let val = value.to_val(&mut *store, self.instance.as_ref())?;
+            self.inner.set_field(&mut *store, idx, val)
         })
     }
 }
@@ -367,16 +395,16 @@ impl Index<usize> for GcObject<RefCell<Store<()>>> {
 
 impl<'a> GcObject<&'a mut Store<()>> {
     /// Create a GcObject that borrows the store
-    pub fn from_ref(val: Val, store: &'a mut Store<()>) -> Result<Self> {
+    pub fn from_ref(val: Val, store: &'a mut Store<()>, instance: Option<Instance>) -> Result<Self> {
         let anyref = val.unwrap_anyref()
             .ok_or_else(|| anyhow::anyhow!("not an anyref"))?;
         let inner = anyref.unwrap_struct(&*store)?;
-        Ok(Self { inner, store, cached: RefCell::new(None) })
+        Ok(Self { inner, store, instance, cached: RefCell::new(None) })
     }
 
     /// Create from an existing StructRef with borrowed store
-    pub fn from_struct_ref(struct_ref: Rooted<StructRef>, store: &'a mut Store<()>) -> Self {
-        Self { inner: struct_ref, store, cached: RefCell::new(None) }
+    pub fn from_struct_ref(struct_ref: Rooted<StructRef>, store: &'a mut Store<()>, instance: Option<Instance>) -> Self {
+        Self { inner: struct_ref, store, instance, cached: RefCell::new(None) }
     }
 
     /// Get a field with automatic type conversion (supports both index and field name)
@@ -544,9 +572,9 @@ macro_rules! gc_struct {
                 Self { inner: obj }
             }
 
-            /// Create directly from Val and Store
-            pub fn from_val(val: wasmtime::Val, store: wasmtime::Store<()>) -> anyhow::Result<Self> {
-                let obj = $crate::gc_traits::GcObject::new(val, store)?;
+            /// Create directly from Val, Store, and optional Instance (needed for string mutation)
+            pub fn from_val(val: wasmtime::Val, store: wasmtime::Store<()>, instance: Option<wasmtime::Instance>) -> anyhow::Result<Self> {
+                let obj = $crate::gc_traits::GcObject::new(val, store, instance)?;
                 Ok(Self::new(obj))
             }
         }
@@ -555,7 +583,18 @@ macro_rules! gc_struct {
         $crate::gc_struct!(@parse_fields $name; $($field_spec)*);
     };
 
-    // Parse mutable field
+    // Parse mutable String field (special case for ergonomic &str setters)
+    (@parse_fields $name:ident; $field_name:ident : $field_idx:literal => mut String, $($rest:tt)*) => {
+        $crate::gc_struct!(@impl_mut_string_field $name, $field_name);
+        $crate::gc_struct!(@parse_fields $name; $($rest)*);
+    };
+
+    // Parse mutable String field (last one, no comma)
+    (@parse_fields $name:ident; $field_name:ident : $field_idx:literal => mut String) => {
+        $crate::gc_struct!(@impl_mut_string_field $name, $field_name);
+    };
+
+    // Parse mutable field (general case)
     (@parse_fields $name:ident; $field_name:ident : $field_idx:literal => mut $field_type:ty, $($rest:tt)*) => {
         $crate::gc_struct!(@impl_mut_field $name, $field_name, $field_type);
         $crate::gc_struct!(@parse_fields $name; $($rest)*);
@@ -580,7 +619,24 @@ macro_rules! gc_struct {
     // Base case: no more fields
     (@parse_fields $name:ident;) => {};
 
-    // Implement getter + setter for mutable field
+    // Implement getter + setter for mutable String field (takes &str)
+    (@impl_mut_string_field $name:ident, $field_name:ident) => {
+        paste::paste! {
+            impl $name {
+                /// Get field value
+                pub fn $field_name(&self) -> anyhow::Result<String> {
+                    self.inner.get(stringify!($field_name))
+                }
+
+                /// Set field value (for mutable string fields) - automatically creates GC string!
+                pub fn [<set_ $field_name>](&self, value: &str) -> anyhow::Result<()> {
+                    self.inner.set_field(stringify!($field_name), value)
+                }
+            }
+        }
+    };
+
+    // Implement getter + setter for mutable field (general case)
     (@impl_mut_field $name:ident, $field_name:ident, $field_type:ty) => {
         paste::paste! {
             impl $name {
@@ -626,6 +682,40 @@ pub struct GcString {
 }
 
 impl GcString {
+    /// Create a new GC string from a Rust &str
+    ///
+    /// This creates a WebAssembly GC array of i8 bytes from the given string.
+    ///
+    /// # Example
+    /// ```
+    /// let val = GcString::create(&mut store, &instance, "Hello")?;
+    /// // Now you can pass `val` to WASM functions or set it in struct fields
+    /// ```
+    pub fn create(store: &mut Store<()>, instance: &Instance, s: &str) -> Result<Val> {
+        // Get the string array type from the instance
+        let new_string = instance
+            .get_func(&mut *store, "new_string")
+            .ok_or_else(|| anyhow::anyhow!("new_string function not found - ensure gc_types.wat exports it"))?;
+
+        // Write string to linear memory
+        let memory = instance
+            .get_memory(&mut *store, "memory")
+            .ok_or_else(|| anyhow::anyhow!("memory not found"))?;
+
+        let offset = 0;  // Use beginning of memory (safe in our demo)
+        memory.write(&mut *store, offset, s.as_bytes())?;
+
+        // Call new_string to create GC array
+        let mut results = vec![Val::I32(0)];
+        new_string.call(
+            &mut *store,
+            &[Val::I32(offset as i32), Val::I32(s.len() as i32)],
+            &mut results,
+        )?;
+
+        Ok(results[0].clone())
+    }
+
     /// Create from a Val
     pub fn from_val(store: &Store<()>, val: Val) -> Result<Self> {
         let anyref = val.unwrap_anyref()
