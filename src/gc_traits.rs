@@ -122,6 +122,14 @@ impl ToVal for Val {
     }
 }
 
+// Blanket implementation for all GcStructWrapper types (Person, Point, etc.)
+// This allows: bob.set_field("friend", ellis)?
+impl<T: GcStructWrapper> ToVal for T {
+    fn to_val(&self, _store: &mut Store<()>, _instance: Option<&Instance>) -> Result<Val> {
+        Ok(self.get_inner().to_val())
+    }
+}
+
 /// Context that holds the Store, allowing methods to be called without explicit store passing
 pub struct GcContext<'a> {
     store: &'a mut Store<()>,

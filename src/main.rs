@@ -232,26 +232,17 @@ fn real_main() -> Result<()> { // get backtraces of errors
     println!("NESTED STRUCTURES: Bob & Ellis Friends!");
     println!("========================================\n");
 
-    // Create Ellis in Bob's store (GC objects must share a store!)
-    let ellis_val = bob.with_store(|store| {
-        // Write Ellis's name to memory
-        memory.write(&mut *store, 100, "Ellis".as_bytes())?;
 
-        // Create Ellis as a person
-        let mut ellis_results = vec![Val::I32(0)];
-        create_person.call(
-            &mut *store,
-            &[Val::I32(100), Val::I32(5), Val::I32(25)],
-            &mut ellis_results,
-        )?;
-
-        println!("Created Ellis (age 25)");
-        Ok::<Val, anyhow::Error>(ellis_results[0].clone())
+    // Create another one with BEAUTIFUL object-literal syntax!
+    let ellis = Person::create(&bob, obj! {
+        name: "Diana 🚀",
+        age: 29,
+        email: "diana@example.com",
     })?;
 
     // Make Bob and Ellis friends - CLEAN API!
     println!("\nMaking Bob and Ellis friends...");
-    bob.set_field("friend", ellis_val)?;  // ✨ NO .inner needed!
+    bob.set_field("friend", ellis)?;  // ✨ NO .inner needed!
     println!("✨ bob.set_field(\"friend\", ellis) - Done!");
 
     // Read Bob's friend's data - THREE ways to do it!
@@ -268,63 +259,6 @@ fn real_main() -> Result<()> { // get backtraces of errors
     // Ellis can even be mutated!
     ellis.set_age(26)?;
     println!("After ellis.set_age(26): {}", ellis.age()?);
-
-    println!("\n✨ Nested GC structures work! Object graphs in Rust!");
-    println!("   (The challenge: all GC objects must share one Store)");
-
-    // Demo: Direct struct creation WITHOUT WASM helper functions!
-    println!("\n");
-    println!("========================================");
-    println!("DIRECT CREATION: No WASM Helper Needed!");
-    println!("========================================\n");
-
-    // Bootstrap: Extract type information from Bob (created using WASM)
-    use gc_traits::StructBuilder;
-    let builder = StructBuilder::from_existing_shared(
-        bob.inner.clone_store(),
-        bob.inner.as_struct_ref()
-    )?;
-
-    println!("✨ Created StructBuilder from Bob's type");
-
-    // Now create new people DIRECTLY from Rust - no WASM calls, no with_store!
-    let name = builder.create_string("Charlie")?;
-    let charlie_struct = builder.create(&[
-        name,
-        Val::I32(35),
-        Val::null_any_ref(),  // no email
-        Val::null_any_ref(),  // no friend
-    ])?;
-
-    println!("✨ Created Charlie directly from Rust (no WASM function call!)");
-
-    // Wrap in Person for ergonomic access
-    let charlie = Person::new(GcObject::from_struct_shared(
-        charlie_struct,
-        bob.inner.clone_store(),
-        bob.inner.clone_instance(),
-    ));
-
-    println!("  Charlie's name: {}", charlie.name()?);
-    println!("  Charlie's age: {}", charlie.age()?);
-
-    // Create another one with BEAUTIFUL object-literal syntax!
-    let diana = Person::create(&bob, obj! {
-        name: "Diana 🚀",
-        age: 29,
-        email: "diana@example.com",
-    })?;
-
-    println!("  Diana's name: {}", diana.name()?);
-    println!("  Diana's age: {}", diana.age()?);
-
-    println!("\n✨ ULTIMATE SUCCESS! Object-literal syntax!");
-    println!("   let diana = Person::create(&bob, obj! {{");
-    println!("       name: \\\"Diana 🚀\\\",");
-    println!("       age: 29,");
-    println!("       email: \\\"diana@example.com\\\",");
-    println!("   }})?;");
-    println!("\n   All complexity hidden - JSON-like syntax for GC structs!");
 
     Ok(())
 }
