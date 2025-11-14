@@ -15,17 +15,6 @@
     (field $friend (mut (ref null $person)))
   ))
 
-  (type $point (struct
-    (field $x (mut f64))
-    (field $y (mut f64))
-  ))
-
-  (type $employee (struct
-    (field $person (ref $person))
-    (field $id i32)
-    (field $salary (mut f64))
-  ))
-
   ;; Array type for list of people
   (type $person_list (array (mut (ref null $person))))
 
