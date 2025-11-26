@@ -1,3 +1,4 @@
+#![allow(unused)]
 use crate::gc_traits::GcObject;
 use crate::wasm_helpers::load_wat;
 use crate::{gc_struct, obj, print};
@@ -11,6 +12,7 @@ gc_struct! {
     }
 }
 
+#[allow(unused)]
 pub fn gc_object_demo() -> anyhow::Result<()> {
     // get backtraces of errors
     // unsafe { set_var("RUST_BACKTRACE", "short"); }

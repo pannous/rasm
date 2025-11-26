@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, Data, DeriveInput, Fields, Attribute, Meta};
+use syn::{parse_macro_input, DeriveInput, Meta};
 
 /// Derives accessor methods for WebAssembly GC struct fields
 ///

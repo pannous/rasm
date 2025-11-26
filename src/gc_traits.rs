@@ -1,12 +1,13 @@
 #![allow(unused)]
 
 use anyhow::Result;
-use wasmtime::*;
-use std::str;
-use std::ops::Index;
-use std::cell::RefCell;
-use std::rc::Rc;
 use paste::paste;
+use serde_json::{Map as JsonMap, Value as JsonValue};
+use std::cell::RefCell;
+use std::ops::Index;
+use std::rc::Rc;
+use std::str;
+use wasmtime::*;
 
 /// Trait for converting Val to Rust types
 pub trait FromVal: Sized {
@@ -336,6 +337,22 @@ impl GcObject<Rc<RefCell<Store<()>>>> {
         })
     }
 
+    pub fn get_int(&self, idx: usize) -> Result<i32> {
+        self.with_store(|store| {
+            let val = self.inner.field(&mut *store, idx)?;
+            i32::from_val(val, &mut *store)
+        })
+    }
+
+    // just use generic get<T> for other types like getFloat, getBool, etc.
+    pub fn get_str(&self, idx: usize) -> Result<String> {
+        self.with_store(|store| {
+            let val = self.inner.field(&mut *store, idx)?;
+            String::from_val(val, store)
+        })
+    }
+
+
     /// Get a nested struct
     pub fn get_struct<I: FieldIndex>(&self, index: I) -> Result<Rooted<StructRef>> {
         self.with_store(|store| {
@@ -430,6 +447,32 @@ impl GcObject<Rc<RefCell<Store<()>>>> {
     pub fn clone_instance(&self) -> Option<Instance> {
         self.instance.clone()
     }
+
+    /// Convert this GC object into a JSON value by walking its fields recursively.
+    pub fn to_json(&self) -> Result<JsonValue> {
+        self.with_store(|store| struct_to_json(&self.inner, store))
+    }
+
+    /// Serialize this GC object to a JSON string.
+    pub fn to_json_string(&self) -> Result<String> {
+        Ok(serde_json::to_string(&self.to_json()?)?)
+    }
+
+    /// Serialize this GC object to pretty-printed JSON.
+    #[allow(unused)]
+    pub fn to_pretty_json_string(&self) -> Result<String> {
+        Ok(serde_json::to_string_pretty(&self.to_json()?)?)
+    }
+
+    /// Create a new struct instance that shares the same store/type as this object.
+    pub fn create_like(&self, fields: Vec<(&str, ObjFieldValue)>) -> Result<Self> {
+        let store = self.store.clone();
+        let struct_ref = {
+            let mut store_ref = store.borrow_mut();
+            create_struct_from_fields(&mut *store_ref, &self.inner, fields)?
+        };
+        Ok(GcObject::from_struct_shared(struct_ref, store, self.instance.clone()))
+    }
 }
 
 // Index implementation for bracket syntax: person["name"]
@@ -520,6 +563,14 @@ impl<'a> GcObject<&'a mut Store<()>> {
     }
 }
 
+/// Register a WebAssembly module's GC metadata so fields can be addressed by name.
+///
+/// Call this right after loading the module bytes (before instantiation) to allow
+/// [`FieldIndex`] lookups on GC structs without hardcoded mappings.
+pub fn register_gc_types_from_wasm(bytes: &[u8]) -> Result<()> {
+    wasm_name_resolver::register_module(bytes)
+}
+
 /// Trait for field index types (supports both usize and &str field names)
 pub trait FieldIndex {
     fn to_field_index(&self, struct_ref: &Rooted<StructRef>, store: &Store<()>) -> Result<usize>;
@@ -533,30 +584,8 @@ impl FieldIndex for usize {
 
 impl FieldIndex for &str {
     fn to_field_index(&self, struct_ref: &Rooted<StructRef>, store: &Store<()>) -> Result<usize> {
-        // Get the struct's type and field count
-        let field_count = struct_ref.ty(store)?.fields().count();
-
-        // For now, use a simple hardcoded mapping for known field names
-        // TODO: Parse from WASM name section for generic support
-        let index = match *self {
-            "name" => 0,
-            "age" => 1,
-            "email" => 2,
-            "friend" => 3,
-            "x" => 0,
-            "y" => 1,
-            "person" => 0,
-            "id" => 1,
-            "salary" => 2,
-            _ => return Err(anyhow::anyhow!("unknown field name: {}", self)),
-        };
-
-        if index >= field_count {
-            return Err(anyhow::anyhow!("field '{}' index {} out of bounds (struct has {} fields)",
-                self, index, field_count));
-        }
-
-        Ok(index)
+        let struct_type = struct_ref.ty(store)?;
+        wasm_name_resolver::lookup_field_index(&struct_type, self)
     }
 }
 
@@ -625,6 +654,18 @@ pub trait GcStructWrapper: Sized {
     fn get_inner(&self) -> &GcObject<Rc<RefCell<Store<()>>>>;
 }
 
+#[macro_export]
+macro_rules! obj {
+    ( $($k:ident : $v:expr),* $(,)? ) => {{
+        vec![
+            $(
+                (stringify!($k), $crate::gc_traits::ObjFieldValue::from($v)),
+            )*
+        ]
+    }};
+}
+
+
 /// Macro for defining type-safe struct wrappers with ergonomic field access
 ///
 /// Generates a wrapper struct with typed accessor methods that hide the store.
@@ -675,9 +716,21 @@ macro_rules! gc_struct {
             }
 
             /// Create directly from Val, Store, and optional Instance (needed for string mutation)
+            #[allow(unused)]
             pub fn from_val(val: wasmtime::Val, store: wasmtime::Store<()>, instance: Option<wasmtime::Instance>) -> anyhow::Result<Self> {
                 let obj = $crate::gc_traits::GcObject::new(val, store, instance)?;
                 Ok(Self::new(obj))
+            }
+
+            /// Get a field with automatic type conversion (supports both index and field name)
+            ///
+            /// # Examples
+            /// ```
+            /// let name: String = person.get(0)?;      // By index
+            /// let name: String = person.get("name")?; // By field name
+            /// ```
+            pub fn get<T: $crate::gc_traits::FromVal, I: $crate::gc_traits::FieldIndex>(&self, field: I) -> anyhow::Result<T> {
+                self.inner.get(field)
             }
 
             /// Generic field setter - delegates to inner GcObject
@@ -688,6 +741,7 @@ macro_rules! gc_struct {
             }
 
             /// Get nested struct field - delegates to inner GcObject
+            #[allow(unused)]
             pub fn get_struct<I: $crate::gc_traits::FieldIndex>(&self, field: I) -> anyhow::Result<wasmtime::Rooted<wasmtime::StructRef>> {
                 self.inner.get_struct(field)
             }
@@ -695,6 +749,7 @@ macro_rules! gc_struct {
             /// Get nested struct as a GcObject wrapper (shares the same store)
             ///
             /// Returns a GcObject that can be wrapped in any gc_struct! type
+            #[allow(unused)]
             pub fn get_struct_object<I: $crate::gc_traits::FieldIndex>(&self, field: I) -> anyhow::Result<$crate::gc_traits::GcObject<std::rc::Rc<std::cell::RefCell<wasmtime::Store<()>>>>> {
                 self.inner.get_struct_object(field)
             }
@@ -743,88 +798,138 @@ macro_rules! gc_struct {
             {
                 self.inner.with_store(f)
             }
+
+            /// Convert this wrapper into a serde_json value for inspection.
+            #[allow(unused)]
+            pub fn to_json(&self) -> anyhow::Result<serde_json::Value> {
+                self.inner.to_json()
+            }
+
+            /// Convert this wrapper into a JSON string.
+            #[allow(unused)]
+            pub fn to_json_string(&self) -> anyhow::Result<String> {
+                self.inner.to_json_string()
+            }
+
+            /// Convert this wrapper into pretty-printed JSON.
+            #[allow(unused)]
+            pub fn to_pretty_json_string(&self) -> anyhow::Result<String> {
+                self.inner.to_pretty_json_string()
+            }
+
+            /// Create a new instance using the same GC type as another wrapper.
+            pub fn create_like<T: $crate::gc_traits::GcStructWrapper>(
+                template: &T,
+                fields: Vec<(&str, $crate::gc_traits::ObjFieldValue)>,
+            ) -> anyhow::Result<Self> {
+                let obj = template.get_inner().create_like(fields)?;
+                Ok(Self::new(obj))
+            }
+
+            /// Alias for [`create_like`] to match the previous API.
+            pub fn create<T: $crate::gc_traits::GcStructWrapper>(
+                template: &T,
+                fields: Vec<(&str, $crate::gc_traits::ObjFieldValue)>,
+            ) -> anyhow::Result<Self> {
+                Self::create_like(template, fields)
+            }
         }
 
         // Generate getters and conditional setters
         $crate::gc_struct!(@parse_fields $name; $($field_spec)*);
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                match self.to_json_string() {
+                    Ok(json) => f.write_str(&json),
+                    Err(err) => write!(f, "<gc-struct error: {}>", err),
+                }
+            }
+        }
+
+        impl std::fmt::Debug for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                std::fmt::Display::fmt(self, f)
+            }
+        }
     };
 
     // Parse mutable String field (special case for ergonomic &str setters)
     (@parse_fields $name:ident; $field_name:ident : $field_idx:literal => mut String, $($rest:tt)*) => {
-        $crate::gc_struct!(@impl_mut_string_field $name, $field_name);
+        $crate::gc_struct!(@impl_mut_string_field $name, $field_name, $field_idx);
         $crate::gc_struct!(@parse_fields $name; $($rest)*);
     };
 
     // Parse mutable String field (last one, no comma)
     (@parse_fields $name:ident; $field_name:ident : $field_idx:literal => mut String) => {
-        $crate::gc_struct!(@impl_mut_string_field $name, $field_name);
+        $crate::gc_struct!(@impl_mut_string_field $name, $field_name, $field_idx);
     };
 
     // Parse mutable field (general case)
     (@parse_fields $name:ident; $field_name:ident : $field_idx:literal => mut $field_type:ty, $($rest:tt)*) => {
-        $crate::gc_struct!(@impl_mut_field $name, $field_name, $field_type);
+        $crate::gc_struct!(@impl_mut_field $name, $field_name, $field_idx, $field_type);
         $crate::gc_struct!(@parse_fields $name; $($rest)*);
     };
 
     // Parse mutable field (last one, no comma)
     (@parse_fields $name:ident; $field_name:ident : $field_idx:literal => mut $field_type:ty) => {
-        $crate::gc_struct!(@impl_mut_field $name, $field_name, $field_type);
+        $crate::gc_struct!(@impl_mut_field $name, $field_name, $field_idx, $field_type);
     };
 
     // Parse immutable field
     (@parse_fields $name:ident; $field_name:ident : $field_idx:literal => $field_type:ty, $($rest:tt)*) => {
-        $crate::gc_struct!(@impl_field $name, $field_name, $field_type);
+        $crate::gc_struct!(@impl_field $name, $field_name, $field_idx, $field_type);
         $crate::gc_struct!(@parse_fields $name; $($rest)*);
     };
 
     // Parse immutable field (last one, no comma)
     (@parse_fields $name:ident; $field_name:ident : $field_idx:literal => $field_type:ty) => {
-        $crate::gc_struct!(@impl_field $name, $field_name, $field_type);
+        $crate::gc_struct!(@impl_field $name, $field_name, $field_idx, $field_type);
     };
 
     // Base case: no more fields
     (@parse_fields $name:ident;) => {};
 
     // Implement getter + setter for mutable String field (takes &str)
-    (@impl_mut_string_field $name:ident, $field_name:ident) => {
+    (@impl_mut_string_field $name:ident, $field_name:ident, $field_idx:literal) => {
         paste::paste! {
             impl $name {
                 /// Get field value
                 pub fn $field_name(&self) -> anyhow::Result<String> {
-                    self.inner.get(stringify!($field_name))
+                    self.inner.get($field_idx)
                 }
 
                 /// Set field value (for mutable string fields) - automatically creates GC string!
                 pub fn [<set_ $field_name>](&self, value: &str) -> anyhow::Result<()> {
-                    self.inner.set_field(stringify!($field_name), value)
+                    self.inner.set_field($field_idx, value)
                 }
             }
         }
     };
 
     // Implement getter + setter for mutable field (general case)
-    (@impl_mut_field $name:ident, $field_name:ident, $field_type:ty) => {
+    (@impl_mut_field $name:ident, $field_name:ident, $field_idx:literal, $field_type:ty) => {
         paste::paste! {
             impl $name {
                 /// Get field value
                 pub fn $field_name(&self) -> anyhow::Result<$field_type> {
-                    self.inner.get(stringify!($field_name))
+                    self.inner.get($field_idx)
                 }
 
                 /// Set field value (for mutable fields)
                 pub fn [<set_ $field_name>](&self, value: $field_type) -> anyhow::Result<()> {
-                    self.inner.set_field(stringify!($field_name), value)
+                    self.inner.set_field($field_idx, value)
                 }
             }
         }
     };
 
     // Implement getter only for immutable field
-    (@impl_field $name:ident, $field_name:ident, $field_type:ty) => {
+    (@impl_field $name:ident, $field_name:ident, $field_idx:literal, $field_type:ty) => {
         impl $name {
             /// Get field value
             pub fn $field_name(&self) -> anyhow::Result<$field_type> {
-                self.inner.get(stringify!($field_name))
+                self.inner.get($field_idx)
             }
         }
     };
@@ -832,6 +937,7 @@ macro_rules! gc_struct {
 
 // Keep WasmAccess export for potential future use
 use rasm_macros::WasmAccess;
+use crate::wasm_name_resolver;
 
 /// Value type for object-literal syntax
 #[derive(Clone)]
@@ -1130,6 +1236,7 @@ impl OldGcString {
     /// let name = OldGcString::to_string(store, instance, &name_field)?;
     /// println!("Name: {}", name);
     /// ```
+    #[allow(unused)]
     pub fn to_string(
         store: &mut Store<()>,
         instance: &Instance,
@@ -1169,7 +1276,7 @@ impl OldGcString {
     }
 
     /// Direct read without using string_to_mem (using array introspection)
-    pub fn to_string_direct(
+pub fn to_string_direct(
         store: &mut Store<()>,
         val: &Val,
     ) -> Result<String> {
@@ -1188,5 +1295,328 @@ impl OldGcString {
 
         // Convert to UTF-8 string
         Ok(String::from_utf8(bytes)?)
+    }
+}
+
+fn create_struct_from_fields(
+    store: &mut Store<()>,
+    template: &Rooted<StructRef>,
+    fields: Vec<(&str, ObjFieldValue)>,
+) -> Result<Rooted<StructRef>> {
+    let struct_type = template.ty(&*store)?;
+    let field_names1 = wasm_name_resolver::field_names(&struct_type)?;
+
+    let mut values: Vec<Option<Val>> = struct_type
+        .fields()
+        .map(|field_type| default_val_for_field(&field_type))
+        .collect();
+
+    for (name, field_value) in fields {
+        let idx = wasm_name_resolver::lookup_field_index(&struct_type, name)?;
+        let field_type = struct_type
+            .field(idx)
+            .ok_or_else(|| anyhow::anyhow!("field {} out of bounds", idx))?;
+        values[idx] = Some(convert_obj_field_value(store, &field_type, field_value)?);
+    }
+
+    for (idx, slot) in values.iter().enumerate() {
+        if slot.is_none() {
+            let field_name = field_names1
+                .get(idx)
+                .and_then(|name| name.as_ref())
+                .map(|s| s.as_str())
+                .unwrap_or_else(|| "<unnamed>");
+            return Err(anyhow::anyhow!(
+                "field '{}' requires an explicit value",
+                field_name
+            ));
+        }
+    }
+
+    let concrete_vals: Vec<Val> = values.into_iter().map(|v| v.unwrap()).collect();
+    let allocator = StructRefPre::new(&mut *store, struct_type);
+    StructRef::new(&mut *store, &allocator, &concrete_vals)
+}
+
+fn convert_obj_field_value(
+    store: &mut Store<()>,
+    field_type: &FieldType,
+    value: ObjFieldValue,
+) -> Result<Val> {
+    Ok(match value {
+        ObjFieldValue::String(s) => convert_string_field(store, field_type, &s)?,
+        ObjFieldValue::I32(n) => Val::I32(n),
+        ObjFieldValue::I64(n) => Val::I64(n),
+        ObjFieldValue::F32(n) => Val::F32(n.to_bits()),
+        ObjFieldValue::F64(n) => Val::F64(n.to_bits()),
+        ObjFieldValue::Bool(b) => Val::I32(if b { 1 } else { 0 }),
+        ObjFieldValue::Null => convert_null_field(field_type)?,
+    })
+}
+
+fn convert_null_field(field_type: &FieldType) -> Result<Val> {
+    if let StorageType::ValType(ValType::Ref(ref_ty)) = field_type.element_type() {
+        if ref_ty.is_nullable() {
+            Ok(Val::null_ref(&ref_ty.heap_type()))
+        } else {
+            Err(anyhow::anyhow!("field does not accept null references"))
+        }
+    } else {
+        Err(anyhow::anyhow!("null can only be assigned to reference fields"))
+    }
+}
+
+fn convert_string_field(
+    store: &mut Store<()>,
+    field_type: &FieldType,
+    value: &str,
+) -> Result<Val> {
+    if let StorageType::ValType(ValType::Ref(ref_ty)) = field_type.element_type() {
+        match ref_ty.heap_type() {
+            HeapType::ConcreteArray(array_ty) => {
+                if matches!(
+                    array_ty.field_type().element_type(),
+                    StorageType::I8 | StorageType::I16
+                ) {
+                    let allocator = ArrayRefPre::new(&mut *store, array_ty.clone());
+                    let elements: Vec<Val> = value.bytes().map(|b| Val::I32(b as i32)).collect();
+                    let array = ArrayRef::new_fixed(&mut *store, &allocator, &elements)?;
+                    Ok(Val::AnyRef(Some(array.into())))
+                } else {
+                    Err(anyhow::anyhow!(
+                        "array field is not byte-based; cannot convert string"
+                    ))
+                }
+            }
+            _ => Err(anyhow::anyhow!(
+                "string values can only be assigned to array reference fields"
+            )),
+        }
+    } else {
+        Err(anyhow::anyhow!("string values require reference fields"))
+    }
+}
+
+fn default_val_for_field(field_type: &FieldType) -> Option<Val> {
+    match field_type.element_type() {
+        StorageType::I8 | StorageType::I16 => Some(Val::I32(0)),
+        StorageType::ValType(val_ty) => Val::default_for_ty(val_ty),
+    }
+}
+
+fn struct_to_json(struct_ref: &Rooted<StructRef>, store: &mut Store<()>) -> Result<JsonValue> {
+    let struct_type = struct_ref.ty(&*store)?;
+    let names = wasm_name_resolver::field_names(&struct_type)?;
+    let mut object = JsonMap::new();
+    for (idx, name_opt) in names.into_iter().enumerate() {
+        let key = name_opt.unwrap_or_else(|| format!("field_{}", idx));
+        let field_type = struct_type
+            .field(idx)
+            .ok_or_else(|| anyhow::anyhow!("field {} missing", idx))?;
+        let val = struct_ref.field(&mut *store, idx)?;
+        let json_val = val_to_json(store, &field_type, val)?;
+        object.insert(key, json_val);
+    }
+    Ok(JsonValue::Object(object))
+}
+
+fn val_to_json(store: &mut Store<()>, field_type: &FieldType, val: Val) -> Result<JsonValue> {
+    Ok(match val {
+        Val::I32(n) => JsonValue::from(n),
+        Val::I64(n) => JsonValue::from(n),
+        Val::F32(bits) => match serde_json::Number::from_f64(f32::from_bits(bits) as f64) {
+            Some(num) => JsonValue::Number(num),
+            None => JsonValue::String(f32::from_bits(bits).to_string()),
+        },
+        Val::F64(bits) => match serde_json::Number::from_f64(f64::from_bits(bits)) {
+            Some(num) => JsonValue::Number(num),
+            None => JsonValue::String(f64::from_bits(bits).to_string()),
+        },
+        Val::V128(v) => JsonValue::String(format!("{:?}", v)),
+        Val::FuncRef(_) => JsonValue::String("<func-ref>".to_string()),
+        Val::ExternRef(_) => JsonValue::String("<extern-ref>".to_string()),
+        Val::AnyRef(None) => JsonValue::Null,
+        Val::AnyRef(Some(anyref)) => anyref_to_json(store, field_type, anyref)?,
+    })
+}
+
+fn anyref_to_json(
+    store: &mut Store<()>,
+    field_type: &FieldType,
+    anyref: Rooted<AnyRef>,
+) -> Result<JsonValue> {
+    if let StorageType::ValType(ValType::Ref(ref_ty)) = field_type.element_type() {
+        match ref_ty.heap_type() {
+            HeapType::ConcreteStruct(_) => {
+                let struct_ref = anyref.unwrap_struct(&*store)?;
+                return struct_to_json(&struct_ref, store);
+            }
+            HeapType::ConcreteArray(array_ty) => {
+                if matches!(
+                    array_ty.field_type().element_type(),
+                    StorageType::I8 | StorageType::I16
+                ) {
+                    let array_ref = anyref.unwrap_array(&mut *store)?;
+                    let gc_string = GcString::from_array(array_ref);
+                    return Ok(JsonValue::String(gc_string.to_string(store)?));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if let Ok(struct_ref) = anyref.clone().unwrap_struct(&*store) {
+        return struct_to_json(&struct_ref, store);
+    }
+    if let Ok(array_ref) = anyref.unwrap_array(&mut *store) {
+        let gc_string = GcString::from_array(array_ref);
+        return Ok(JsonValue::String(gc_string.to_string(store)?));
+    }
+
+    Ok(JsonValue::String("<unsupported-ref>".to_string()))
+}
+
+
+
+pub trait InstanceExt {
+    /// Call a WebAssembly function with automatic type conversion
+    ///
+    /// For primitive types (i32, i64, f32, f64, bool, String), the store reference is borrowed.
+    /// For GC struct types (Obj, Person, etc.), the store is moved into the returned object.
+    fn call<T>(&self, store: &mut wasmtime::Store<()>, name: &str, args: &[Val]) -> anyhow::Result<T>
+    where
+        T: FromWasmCall;
+
+    /// Convenience helper that always returns an owned GcObject (concrete type).
+    /// This avoids needing to annotate the return type when you specifically want
+    /// a GC object that owns the store.
+    fn call_obj(&self, store: &mut wasmtime::Store<()>, name: &str, args: &[Val]) -> anyhow::Result<OwnedGcObject>;
+}
+
+pub type OwnedGcObject = GcObject<Rc<RefCell<Store<()>>>>;
+
+// Alias requested by user: allow using `Struct` as a short name for an owned GC object
+pub type Struct = OwnedGcObject; // GENERIC Struct, better do ORM:
+// person.get("name") ✓ Named property available whenever they are defined in WAT
+// ⚠️ person.name() needs special ORM magic:
+// gc_struct! {
+//     Person {
+//         name: 0 => mut String,  // Now mutable - generates set_name(&str)!
+//         age: 1 => mut i32,      // Mutable - generates set_age(i32)
+//     }
+// }
+
+impl InstanceExt for Instance {
+    fn call<T>(&self, store: &mut wasmtime::Store<()>, name: &str, args: &[Val]) -> anyhow::Result<T>
+    where
+        T: FromWasmCall,
+    {
+        let func = self
+            .get_func(&mut *store, name)
+            .ok_or_else(|| anyhow::anyhow!("function '{}' not found", name))?;
+
+        let mut results = vec![Val::I32(0)];
+        func.call(&mut *store, args, &mut results)?;
+
+        T::from_wasm_call(results[0].clone(), store, Some(self))
+    }
+
+    /// Convenience helper that always returns an owned GcObject (concrete type).
+    /// This avoids needing to annotate the return type when you specifically want
+    /// a GC object that owns the store.
+    fn call_obj(&self, store: &mut wasmtime::Store<()>, name: &str, args: &[Val]) -> anyhow::Result<OwnedGcObject> {
+        let func = self
+            .get_func(&mut *store, name)
+            .ok_or_else(|| anyhow::anyhow!("function '{}' not found", name))?;
+
+        let mut results = vec![Val::I32(0)];
+        func.call(&mut *store, args, &mut results)?;
+
+        // Take ownership of the store and create the GcObject
+        let engine = store.engine().clone();
+        let owned_store = std::mem::replace(store, Store::new(&engine, ()));
+        let obj = GcObject::new(results[0].clone(), owned_store, Some(self.clone()))?;
+        Ok(obj)
+    }
+}
+
+/// Trait for converting WebAssembly function call results to Rust types
+pub trait FromWasmCall: Sized {
+    fn from_wasm_call(val: Val, store: &mut Store<()>, instance: Option<&Instance>) -> Result<Self>;
+}
+
+// Implement for primitive types
+impl FromWasmCall for i32 {
+    fn from_wasm_call(val: Val, _store: &mut Store<()>, _instance: Option<&Instance>) -> Result<Self> {
+        Ok(val.unwrap_i32())
+    }
+}
+
+impl FromWasmCall for i64 {
+    fn from_wasm_call(val: Val, _store: &mut Store<()>, _instance: Option<&Instance>) -> Result<Self> {
+        Ok(val.unwrap_i64())
+    }
+}
+
+impl FromWasmCall for f32 {
+    fn from_wasm_call(val: Val, _store: &mut Store<()>, _instance: Option<&Instance>) -> Result<Self> {
+        Ok(f32::from_bits(val.unwrap_f32() as u32))
+    }
+}
+
+impl FromWasmCall for f64 {
+    fn from_wasm_call(val: Val, _store: &mut Store<()>, _instance: Option<&Instance>) -> Result<Self> {
+        Ok(val.unwrap_f64())
+    }
+}
+
+impl FromWasmCall for bool {
+    fn from_wasm_call(val: Val, _store: &mut Store<()>, _instance: Option<&Instance>) -> Result<Self> {
+        Ok(val.unwrap_i32() != 0)
+    }
+}
+
+impl FromWasmCall for String {
+    fn from_wasm_call(val: Val, store: &mut Store<()>, _instance: Option<&Instance>) -> Result<Self> {
+        let gc_string = GcString::from_val(store, val)?;
+        gc_string.to_string(store)
+    }
+}
+
+impl FromWasmCall for Val {
+    fn from_wasm_call(val: Val, _store: &mut Store<()>, _instance: Option<&Instance>) -> Result<Self> {
+        Ok(val)
+    }
+}
+
+// Allow calling functions that return a raw GcObject that owns the store.
+// This hides the boilerplate `GcObject::new(val, store, Some(instance))` by taking
+// ownership of the provided `store` (using `mem::replace`) and creating the
+// `GcObject` directly.
+impl FromWasmCall for GcObject<std::rc::Rc<std::cell::RefCell<Store<()>>>> {
+    fn from_wasm_call(val: Val, store: &mut Store<()>, instance: Option<&Instance>) -> Result<Self> {
+        // Take ownership of the store using mem::replace with a dummy store
+        let engine = store.engine().clone();
+        let owned_store = std::mem::replace(store, Store::new(&engine, ()));
+        // Create the GcObject which takes ownership of the store
+        let obj = GcObject::new(val, owned_store, instance.cloned())?;
+
+        Ok(obj)
+    }
+}
+
+// Blanket implementation for all GcStructWrapper types (Person, Point, Obj, etc.)
+// Note: This implementation takes ownership of the store by using mem::replace
+impl<T: GcStructWrapper> FromWasmCall for T {
+    fn from_wasm_call(val: Val, store: &mut Store<()>, instance: Option<&Instance>) -> Result<Self> {
+        // Take ownership of the store using mem::replace with a dummy store
+        // The dummy store will never be used because the original store is now owned by GcObject
+        let engine = store.engine().clone();
+        let owned_store = std::mem::replace(store, Store::new(&engine, ()));
+
+        // Create the GcObject which takes ownership of the store
+        let obj = GcObject::new(val, owned_store, instance.cloned())?;
+
+        Ok(T::from_gc_object(obj))
     }
 }

@@ -1,5 +1,6 @@
+#![allow(unused)]
 use wasmtime::StructType;
-use crate::wasm_name_resolver::wasm_name_resolver::REGISTRY;
+// use wasm_name_resolver::REGISTRY;
 
 mod wasm_name_resolver {
     use super::*;
@@ -13,9 +14,24 @@ mod wasm_name_resolver {
 
     pub(crate) static REGISTRY: Lazy<Mutex<FieldNameRegistry>> = Lazy::new(|| Mutex::new(FieldNameRegistry::default()));
 
+    pub(crate) fn registry_register_module(bytes: &[u8]) -> Result<()> {
+        let mut registry = REGISTRY.lock().expect("metadata registry lock poisoned");
+        registry.register_module(bytes)
+    }
+
+    pub(crate) fn registry_lookup_field(struct_type: &StructType, field_name: &str) -> Result<usize> {
+        let mut registry = REGISTRY.lock().expect("metadata registry lock poisoned");
+        registry.lookup(struct_type, field_name)
+    }
+
+    pub(crate) fn registry_field_names(struct_type: &StructType) -> Result<Vec<Option<String>>> {
+        let mut registry = REGISTRY.lock().expect("metadata registry lock poisoned");
+        registry.field_names0(struct_type)
+    }
+
 
     #[derive(Default)]
-    struct FieldNameRegistry {
+    pub(crate) struct FieldNameRegistry {
         modules: Vec<Arc<ParsedModule>>,
         cache: HashMap<StructTypeKey, Arc<StructFieldMapping>>,
     }
@@ -38,7 +54,7 @@ mod wasm_name_resolver {
                 .ok_or_else(|| unknown_field_error(field_name, &mapping))
         }
 
-        pub(crate) fn field_names(&mut self, struct_type: &StructType) -> Result<Vec<Option<String>>> {
+        pub(crate) fn field_names0(&mut self, struct_type: &StructType) -> Result<Vec<Option<String>>> {
             let mapping = self.ensure_mapping(struct_type)?;
             Ok(mapping.names.clone())
         }
@@ -173,7 +189,7 @@ mod wasm_name_resolver {
         }
 
         fn read_type_section(
-            mut reader: wp::TypeSectionReader,
+            reader: wp::TypeSectionReader,
             mut next_index: u32,
             types: &mut Vec<ParsedTypeInfo>,
         ) -> Result<u32> {
@@ -637,12 +653,13 @@ mod wasm_name_resolver {
 }
 
 pub fn register_module(bytes: &[u8]) -> anyhow::Result<()> {
-    let mut registry = crate::wasm_name_resolver::wasm_name_resolver::REGISTRY.lock().expect("metadata registry lock poisoned");
-    registry.register_module(bytes)
+    wasm_name_resolver::registry_register_module(bytes)
 }
 
 pub fn lookup_field_index(struct_type: &StructType, field_name: &str) -> anyhow::Result<usize> {
-    let mut registry = REGISTRY.lock().expect("metadata registry lock poisoned");
-    registry.lookup(struct_type, field_name)
+    wasm_name_resolver::registry_lookup_field(struct_type, field_name)
 }
 
+pub(super) fn field_names(struct_type: &StructType) -> Result<Vec<Option<String>>, anyhow::Error> {
+    wasm_name_resolver::registry_field_names(struct_type)
+}
