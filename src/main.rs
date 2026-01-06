@@ -15,8 +15,8 @@ use crate::run_test_wat::run_test_wat;
 
 fn main() -> Result<()> {
     // Propagate errors from the demo to get proper backtraces / exit codes.
-    // gc_struct_demo()?;
-    run_test_wat()?;
+    gc_object_demo()?;
+    // run_test_wat()?;
     Ok(())
 }
 
